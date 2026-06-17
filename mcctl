@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$PROJECT_DIR/.env"
+ENV_EXAMPLE="$PROJECT_DIR/.env.example"
+SERVER_FILES_DIR="$PROJECT_DIR/server-files"
+DATA_DIR="$PROJECT_DIR/data"
+BACKUP_DIR="$PROJECT_DIR/backups"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./mcctl init
+  ./mcctl prepare "/path/to/乌托邦3.5服务端"
+  ./mcctl set KEY value
+  ./mcctl build
+  ./mcctl up
+  ./mcctl down
+  ./mcctl restart
+  ./mcctl logs
+  ./mcctl ps
+  ./mcctl backup
+
+Common settings:
+  ./mcctl set EULA true
+  ./mcctl set MAX_MEMORY 8192M
+  ./mcctl set MAX_PLAYERS 30
+  ./mcctl set MOTD "Utopia 3.5"
+  ./mcctl set ONLINE_MODE true
+EOF
+}
+
+ensure_env() {
+    if [ ! -f "$ENV_FILE" ]; then
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
+        printf 'Created %s from .env.example\n' "$ENV_FILE"
+    fi
+}
+
+compose() {
+    (cd "$PROJECT_DIR" && docker compose "$@")
+}
+
+set_env() {
+    local key="$1"
+    shift
+    local value="$*"
+    local tmp
+
+    ensure_env
+    tmp="$(mktemp)"
+
+    awk -v key="$key" -v value="$value" '
+        BEGIN { found = 0 }
+        $0 ~ "^" key "=" {
+            print key "=" value
+            found = 1
+            next
+        }
+        { print }
+        END {
+            if (!found) {
+                print key "=" value
+            }
+        }
+    ' "$ENV_FILE" > "$tmp"
+
+    mv "$tmp" "$ENV_FILE"
+    printf 'Set %s=%s\n' "$key" "$value"
+}
+
+prepare() {
+    local source_dir="$1"
+
+    if [ ! -d "$source_dir" ]; then
+        printf 'Source directory does not exist: %s\n' "$source_dir" >&2
+        exit 1
+    fi
+
+    if [ ! -f "$source_dir/server.jar" ]; then
+        printf 'server.jar was not found in: %s\n' "$source_dir" >&2
+        exit 1
+    fi
+
+    mkdir -p "$SERVER_FILES_DIR"
+
+    rsync -a --delete \
+        --exclude '.DS_Store' \
+        --exclude 'zulu-21' \
+        --exclude 'world' \
+        --exclude 'world_nether' \
+        --exclude 'world_the_end' \
+        --exclude 'logs' \
+        --exclude 'crash-reports' \
+        --exclude 'backups' \
+        --exclude 'eula.txt' \
+        --exclude 'server.properties' \
+        --exclude 'usercache.json' \
+        --exclude 'ops.json' \
+        --exclude 'whitelist.json' \
+        --exclude 'banned-players.json' \
+        --exclude 'banned-ips.json' \
+        --exclude '*.log' \
+        "$source_dir"/ "$SERVER_FILES_DIR"/
+
+    rm -f "$SERVER_FILES_DIR"/*.bat
+    touch "$SERVER_FILES_DIR/.gitkeep"
+
+    printf 'Prepared server files in %s\n' "$SERVER_FILES_DIR"
+}
+
+backup() {
+    mkdir -p "$BACKUP_DIR"
+
+    if [ ! -d "$DATA_DIR" ]; then
+        printf 'No data directory found yet: %s\n' "$DATA_DIR" >&2
+        exit 1
+    fi
+
+    local items=()
+    local name
+    for name in world world_nether world_the_end; do
+        if [ -e "$DATA_DIR/$name" ]; then
+            items+=("$name")
+        fi
+    done
+
+    if [ "${#items[@]}" -eq 0 ]; then
+        printf 'No world directories found under %s\n' "$DATA_DIR" >&2
+        exit 1
+    fi
+
+    local stamp
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    local output="$BACKUP_DIR/world-$stamp.tar.gz"
+
+    tar -czf "$output" -C "$DATA_DIR" "${items[@]}"
+    printf 'Created backup: %s\n' "$output"
+}
+
+case "${1:-}" in
+    init)
+        ensure_env
+        ;;
+    prepare)
+        if [ "${2:-}" = "" ]; then
+            usage
+            exit 1
+        fi
+        prepare "$2"
+        ;;
+    set)
+        if [ "${2:-}" = "" ] || [ "${3:-}" = "" ]; then
+            usage
+            exit 1
+        fi
+        key="$2"
+        shift 2
+        set_env "$key" "$@"
+        ;;
+    build)
+        ensure_env
+        compose build
+        ;;
+    up)
+        ensure_env
+        compose up -d
+        ;;
+    down)
+        compose down
+        ;;
+    restart)
+        compose restart
+        ;;
+    logs)
+        compose logs -f --tail=200 minecraft
+        ;;
+    ps|status)
+        compose ps
+        ;;
+    backup)
+        backup
+        ;;
+    help|-h|--help|"")
+        usage
+        ;;
+    *)
+        printf 'Unknown command: %s\n\n' "$1" >&2
+        usage
+        exit 1
+        ;;
+esac
+

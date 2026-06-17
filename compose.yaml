@@ -1,0 +1,56 @@
+services:
+  minecraft:
+    image: ${IMAGE_NAME:-utopia35-mc-server}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      args:
+        SERVER_PACK_URL: ${SERVER_PACK_URL:-}
+        ALLOW_EMPTY_PACK: ${ALLOW_EMPTY_PACK:-false}
+    container_name: ${CONTAINER_NAME:-utopia35-mc}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    stdin_open: true
+    tty: true
+    stop_grace_period: ${STOP_GRACE_PERIOD:-2m}
+    ports:
+      - "${HOST_PORT:-25565}:${SERVER_PORT:-25565}/tcp"
+      - "${RCON_HOST_PORT:-25575}:${RCON_PORT:-25575}/tcp"
+    environment:
+      EULA: ${EULA:-false}
+      SERVER_JAR: ${SERVER_JAR:-server.jar}
+      MIN_MEMORY: ${MIN_MEMORY:-4096M}
+      MAX_MEMORY: ${MAX_MEMORY:-4096M}
+      USE_AIKAR_FLAGS: ${USE_AIKAR_FLAGS:-true}
+      JVM_OPTS: ${JVM_OPTS:-}
+      CUSTOM_JVM_ARGS: ${CUSTOM_JVM_ARGS:-}
+      CUSTOM_ARGS: ${CUSTOM_ARGS:-}
+      ENABLE_GUI: ${ENABLE_GUI:-false}
+      SERVER_PORT: ${SERVER_PORT:-25565}
+      RCON_PORT: ${RCON_PORT:-25575}
+      MOTD: ${MOTD:-Utopia 3.5 Fabric Server}
+      LEVEL_NAME: ${LEVEL_NAME:-world}
+      LEVEL_SEED: ${LEVEL_SEED:-}
+      GAMEMODE: ${GAMEMODE:-survival}
+      DIFFICULTY: ${DIFFICULTY:-normal}
+      MAX_PLAYERS: ${MAX_PLAYERS:-20}
+      ONLINE_MODE: ${ONLINE_MODE:-true}
+      PVP: ${PVP:-true}
+      ALLOW_FLIGHT: ${ALLOW_FLIGHT:-true}
+      VIEW_DISTANCE: ${VIEW_DISTANCE:-10}
+      SIMULATION_DISTANCE: ${SIMULATION_DISTANCE:-10}
+      ENABLE_WHITELIST: ${ENABLE_WHITELIST:-false}
+      ENFORCE_WHITELIST: ${ENFORCE_WHITELIST:-false}
+      ENABLE_COMMAND_BLOCK: ${ENABLE_COMMAND_BLOCK:-false}
+      SPAWN_PROTECTION: ${SPAWN_PROTECTION:-16}
+      MAX_TICK_TIME: ${MAX_TICK_TIME:-60000}
+      ENABLE_RCON: ${ENABLE_RCON:-false}
+      RCON_PASSWORD: ${RCON_PASSWORD:-}
+      SERVER_PROPERTIES: ${SERVER_PROPERTIES:-}
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc '</dev/tcp/127.0.0.1/${SERVER_PORT:-25565}'"]
+      interval: 30s
+      timeout: 5s
+      retries: 6
+      start_period: 2m
+
