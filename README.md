@@ -16,6 +16,12 @@ cd /Users/dan_zai/Git/utopia35-mc-docker
 
 服务器默认监听 `25565`。运行数据会在 `./data`，其中包括 `world`、`server.properties`、`ops.json`、`whitelist.json`、日志和崩溃报告。
 
+已经发布的 DockerHub 镜像：
+
+```bash
+docker pull danzai233/utopia35-mc-server:3.5
+```
+
 ## 常用配置
 
 所有配置都在 `.env`，也可以用 `mcctl set` 修改：
@@ -100,10 +106,10 @@ docker buildx build --platform linux/amd64,linux/arm64 \
   --push .
 ```
 
-别人使用你发布的镜像时，只需要把 `.env` 里的镜像名改成：
+别人使用已经发布的 DockerHub 镜像时，只需要保持 `.env` 里的镜像名为：
 
 ```env
-IMAGE_NAME=ghcr.io/<你的 GitHub 用户名>/utopia35-mc-server
+IMAGE_NAME=danzai233/utopia35-mc-server
 IMAGE_TAG=3.5
 ```
 
