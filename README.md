@@ -191,14 +191,20 @@ Compose 的运行数据会在仓库目录的 `./data`。
 - 实时查看服务器日志
 - 通过 RCON 输入控制台命令
 - 快捷执行玩家管理命令：`op`、`deop`、白名单、踢出、封禁、广播、保存地图等
+- 查看在线玩家并一键填入玩家名
+- 单独查看玩家聊天，并从面板向游戏内发送聊天消息
 - 上传、禁用、启用、删除 mod
-- 创建和下载地图备份
+- 创建、下载、恢复和删除地图/配置/迁移备份
+- 把备份上传到 S3/R2/MinIO，或从远端拉回本地恢复
+- 安装并嵌入 BlueMap Web 世界地图
 
 第一次使用前建议先设置面板密码：
 
 ```bash
 ./mcctl set PANEL_PASSWORD "换成一个强密码"
 ```
+
+也可以先用当前密码登录面板，然后在“配置”页的“面板安全”里修改密码；面板会把新的 `PANEL_PASSWORD` 写回 `.env`。
 
 启动服务器和面板：
 
@@ -231,7 +237,7 @@ docker compose --profile panel pull
 docker compose --profile panel up -d
 ```
 
-面板默认只绑定 `127.0.0.1`，也就是只能从服务器本机访问。如果你要放到公网，请务必先修改 `PANEL_PASSWORD`，并把面板放在 HTTPS、Cloudflare Access、Tailscale、VPN 或其他认证保护后面。不要把带 Docker socket 权限的管理面板裸露到公网。
+面板默认只绑定 `127.0.0.1`，也就是只能从服务器本机访问。如果你要放到公网，请务必先修改 `PANEL_PASSWORD` 或在“配置”页改掉默认密码，并把面板放在 HTTPS、Cloudflare Access、Tailscale、VPN 或其他认证保护后面。不要把带 Docker socket 权限的管理面板裸露到公网。
 
 面板保存配置时会写两个文件：
 
@@ -242,17 +248,41 @@ docker compose --profile panel up -d
 
 RCON 默认关闭。要在面板里输入服务器命令，可以在“配置”页点击“生成并启用 RCON”，保存后重启服务器。
 
+### Web 世界地图
+
+面板的“地图”页会检测并嵌入 [BlueMap](https://modrinth.com/plugin/bluemap)。BlueMap 是 MIT 开源的 Minecraft 3D Web 地图工具，Fabric 服务端可用。
+
+如果还没有安装，点击“安装 BlueMap”会从 Modrinth 下载适用于 Fabric 1.20.1 的 BlueMap jar 到 `data/mods`。安装后需要重启或重新创建 Minecraft 容器，让 BlueMap 生成配置并启动 Web 地图服务。
+
+BlueMap 自己的 Web 服务默认发布在：
+
+```text
+http://127.0.0.1:8100
+```
+
+面板默认不会让浏览器直接访问这个端口，而是通过登录后的同源地址 `/bluemap/` 代理地图资源。因此用 frp、Nginx 或其他方式把面板 `8080` 映射到外网时，通常只需要转发面板端口，地图页也会一起可用。
+
+面板会优先把内嵌地图打开到已经有瓦片的 `world` 维度，避免 BlueMap 默认选到尚未渲染的其他维度时只显示黑色画布。
+
+如果你已经给 BlueMap 单独配置了公网域名或反代地址，可以设置 `BLUEMAP_PUBLIC_URL` 覆盖面板内嵌地址；留空则使用内置 `/bluemap/` 代理。
+
+首次启动后，如果 BlueMap 日志提示需要同意下载资源，请按提示修改 `data/config/bluemap/core.conf` 中的 `accept-download`，然后重启服务器或执行 BlueMap reload。
+
 面板相关变量：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PANEL_BIND` | `127.0.0.1` | 面板监听的宿主机地址 |
 | `PANEL_HOST_PORT` | `8080` | 面板宿主机端口 |
-| `PANEL_PASSWORD` | `change-me` | 面板登录密码 |
+| `PANEL_PASSWORD` | `change-me` | 面板登录密码，可在“配置”页修改 |
 | `PANEL_CONTAINER_NAME` | `utopia35-panel` | 面板容器名 |
+| `BLUEMAP_HOST_PORT` | `8100` | BlueMap 地图宿主机端口 |
+| `BLUEMAP_PORT` | `8100` | BlueMap 容器内端口 |
+| `BLUEMAP_PUBLIC_URL` | 空 | 面板嵌入地图时使用的公网/反代地址，空则使用内置 `/bluemap/` 代理 |
+| `BLUEMAP_INTERNAL_URL` | `http://minecraft:8100` | 面板容器访问 BlueMap 的内部地址 |
 | `ENV_CONFIG_FILE` | `/data/server.env` | Minecraft 启动时读取的运行配置文件 |
 
-## 备份地图
+## 备份与迁移
 
 使用 `mcctl`：
 
@@ -267,6 +297,30 @@ RCON 默认关闭。要在面板里输入服务器命令，可以在“配置”
 ```bash
 tar -czf utopia35-world-backup.tar.gz -C ~/utopia35-server/data world
 ```
+
+Web 面板的“备份与迁移”页提供三种本地备份：
+
+- 地图备份：只打包 `data/world*` 存档目录
+- 配置备份：打包 `server.properties`、名单、ban/op、`config`、`defaultconfigs`、`kubejs`、面板 `.env` 等配置
+- 完整迁移包：打包世界、mods、配置、脚本、名单和启动相关文件，适合换一台机器继续启动同一个服务器
+
+每个面板创建的备份都会带 `utopia35-backup-manifest.json`，并在 `backups/` 旁边生成同名 `.json` 索引。面板可以从本地备份恢复；恢复时会先停止 Minecraft 容器，再把压缩包里的 `data/` 和 `workspace/` 合并回当前项目。恢复后请检查 `.env`、端口和路径，再启动或重启服务器。
+
+备份包可能包含 `.env`、RCON 密码、面板密码和对象存储密钥，只上传到可信存储。远端备份使用 S3 兼容接口，支持 AWS S3、Cloudflare R2、MinIO 等。可以在面板里填写，也可以写入 `.env`：
+
+```env
+REMOTE_BACKUP_ENABLED=true
+REMOTE_BACKUP_ENDPOINT=https://<accountid>.r2.cloudflarestorage.com
+REMOTE_BACKUP_REGION=auto
+REMOTE_BACKUP_BUCKET=utopia35-backups
+REMOTE_BACKUP_PREFIX=server-a
+REMOTE_BACKUP_ACCESS_KEY_ID=...
+REMOTE_BACKUP_SECRET_ACCESS_KEY=...
+REMOTE_BACKUP_FORCE_PATH_STYLE=true
+REMOTE_BACKUP_AUTO_UPLOAD=false
+```
+
+换机器时，先部署本仓库并启动面板，填入同一套远端备份配置，然后在“远端备份”里把迁移包拉回本地，再点击“恢复”。如果只想迁移地图，可以只拉回地图备份；如果想尽量保留原服体验，优先使用完整迁移包。
 
 ## 本地构建镜像
 

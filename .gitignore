@@ -2,6 +2,7 @@
 .env
 data/
 backups/*.tar.gz
+backups/*.json
 panel/node_modules/
 .docker-pack/**
 !.docker-pack/

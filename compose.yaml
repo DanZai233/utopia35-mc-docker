@@ -14,6 +14,7 @@ services:
     ports:
       - "${HOST_PORT:-25565}:${SERVER_PORT:-25565}/tcp"
       - "${RCON_HOST_PORT:-25575}:${RCON_PORT:-25575}/tcp"
+      - "${BLUEMAP_HOST_PORT:-8100}:${BLUEMAP_PORT:-8100}/tcp"
     environment:
       EULA: ${EULA:-false}
       SERVER_JAR: ${SERVER_JAR:-server.jar}
@@ -46,6 +47,7 @@ services:
       RCON_PASSWORD: ${RCON_PASSWORD:-}
       SERVER_PROPERTIES: ${SERVER_PROPERTIES:-}
       ENV_CONFIG_FILE: ${ENV_CONFIG_FILE:-/data/server.env}
+      BLUEMAP_PORT: ${BLUEMAP_PORT:-8100}
     volumes:
       - ./data:/data
     healthcheck:
@@ -76,6 +78,19 @@ services:
       BACKUP_DIR: /workspace/backups
       RCON_HOST: ${PANEL_RCON_HOST:-minecraft}
       RCON_PORT: ${RCON_PORT:-25575}
+      BLUEMAP_PORT: ${BLUEMAP_PORT:-8100}
+      BLUEMAP_HOST_PORT: ${BLUEMAP_HOST_PORT:-8100}
+      BLUEMAP_PUBLIC_URL: ${BLUEMAP_PUBLIC_URL:-}
+      BLUEMAP_INTERNAL_URL: ${BLUEMAP_INTERNAL_URL:-http://minecraft:8100}
+      REMOTE_BACKUP_ENABLED: ${REMOTE_BACKUP_ENABLED:-false}
+      REMOTE_BACKUP_ENDPOINT: ${REMOTE_BACKUP_ENDPOINT:-}
+      REMOTE_BACKUP_REGION: ${REMOTE_BACKUP_REGION:-us-east-1}
+      REMOTE_BACKUP_BUCKET: ${REMOTE_BACKUP_BUCKET:-}
+      REMOTE_BACKUP_PREFIX: ${REMOTE_BACKUP_PREFIX:-utopia35}
+      REMOTE_BACKUP_ACCESS_KEY_ID: ${REMOTE_BACKUP_ACCESS_KEY_ID:-}
+      REMOTE_BACKUP_SECRET_ACCESS_KEY: ${REMOTE_BACKUP_SECRET_ACCESS_KEY:-}
+      REMOTE_BACKUP_FORCE_PATH_STYLE: ${REMOTE_BACKUP_FORCE_PATH_STYLE:-true}
+      REMOTE_BACKUP_AUTO_UPLOAD: ${REMOTE_BACKUP_AUTO_UPLOAD:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./:/workspace

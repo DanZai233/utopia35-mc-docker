@@ -9,6 +9,8 @@
     "dev": "node --watch src/server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1070.0",
+    "@aws-sdk/lib-storage": "^3.1070.0",
     "dockerode": "^5.0.0",
     "express": "^4.19.2",
     "multer": "^2.2.0",

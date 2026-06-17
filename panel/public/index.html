@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Utopia 3.5 控制面板</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260617-map-pink">
   </head>
   <body>
     <section id="login-view" class="login-shell" hidden>
@@ -18,7 +18,7 @@
           <input id="login-password" type="password" autocomplete="current-password" required>
         </label>
         <button type="submit">登录</button>
-        <p id="login-warning" class="warning-text" hidden>当前仍在使用默认密码，请登录后尽快修改 `.env` 里的 `PANEL_PASSWORD`。</p>
+        <p id="login-warning" class="warning-text" hidden>当前仍在使用默认密码，请登录后到“配置”页修改面板密码。</p>
         <p id="login-error" class="error-text" role="alert"></p>
       </form>
     </section>
@@ -40,12 +40,20 @@
 
       <nav class="tabs" aria-label="控制面板分区">
         <button class="active" data-tab="overview">状态</button>
+        <button data-tab="map">地图</button>
+        <button data-tab="chat">聊天</button>
         <button data-tab="config">配置</button>
         <button data-tab="console">控制台</button>
         <button data-tab="players">玩家</button>
         <button data-tab="mods">Mods</button>
         <button data-tab="backups">备份</button>
       </nav>
+
+      <section id="app-message" class="notice app-message" hidden></section>
+      <section id="restart-notice" class="notice restart-notice" hidden>
+        <strong>有改动需要重启 Minecraft 才会生效。</strong>
+        <button id="restart-from-notice-button" type="button">现在重启</button>
+      </section>
 
       <main>
         <section id="tab-overview" class="tab-panel active">
@@ -84,7 +92,66 @@
           <section id="security-warning" class="notice" hidden></section>
         </section>
 
+        <section id="tab-map" class="tab-panel">
+          <div class="section-head">
+            <h2>世界地图</h2>
+            <div class="button-row">
+              <button id="refresh-map-button" type="button" class="secondary">刷新状态</button>
+              <button id="install-bluemap-button" type="button">安装 BlueMap</button>
+              <a id="open-map-link" class="download-button" href="#" target="_blank" rel="noreferrer">打开地图</a>
+            </div>
+          </div>
+          <section id="map-status" class="notice"></section>
+          <div id="map-frame-shell" class="map-frame-shell" hidden>
+            <iframe id="map-frame" title="BlueMap 世界地图" loading="lazy"></iframe>
+          </div>
+        </section>
+
+        <section id="tab-chat" class="tab-panel">
+          <div class="section-head">
+            <h2>玩家聊天</h2>
+            <div class="button-row">
+              <span id="chat-state" class="state-pill stopped">未连接</span>
+              <button id="connect-chat-button" type="button" class="secondary">连接聊天</button>
+              <button id="clear-chat-button" type="button" class="ghost">清空显示</button>
+            </div>
+          </div>
+          <section class="chat-shell">
+            <div id="chat-output" class="chat-output" aria-live="polite">
+              <div class="empty-state">还没有聊天消息。</div>
+            </div>
+            <form id="chat-form" class="chat-compose">
+              <input id="chat-input" type="text" placeholder="输入要发到游戏里的消息" maxlength="240" autocomplete="off">
+              <button type="submit">发送</button>
+            </form>
+          </section>
+        </section>
+
         <section id="tab-config" class="tab-panel">
+          <section class="config-group panel-security">
+            <div class="section-head">
+              <h2>面板安全</h2>
+            </div>
+            <form id="panel-password-form" class="fields-grid">
+              <label class="field">
+                <span>当前密码</span>
+                <input id="panel-current-password" type="password" autocomplete="current-password" required>
+              </label>
+              <label class="field">
+                <span>新密码</span>
+                <input id="panel-new-password" type="password" autocomplete="new-password" minlength="8" required>
+              </label>
+              <label class="field">
+                <span>确认新密码</span>
+                <input id="panel-confirm-password" type="password" autocomplete="new-password" minlength="8" required>
+              </label>
+              <div class="form-actions">
+                <button type="submit">修改密码</button>
+              </div>
+            </form>
+            <p id="panel-password-message" class="form-message" role="status"></p>
+          </section>
+
           <form id="config-form">
             <div class="section-head">
               <h2>运行配置</h2>
@@ -116,7 +183,15 @@
         <section id="tab-players" class="tab-panel">
           <div class="section-head">
             <h2>玩家快捷命令</h2>
+            <button id="refresh-players-button" type="button" class="secondary">刷新在线玩家</button>
           </div>
+          <section class="panel">
+            <div class="section-head">
+              <h2>在线玩家</h2>
+              <span id="online-player-count" class="state-pill">读取中</span>
+            </div>
+            <div id="online-player-list" class="player-list"></div>
+          </section>
           <div class="quick-grid">
             <form data-command-template="list"><strong>在线玩家</strong><button type="submit">查询</button></form>
             <form data-command-template="say {message}"><strong>广播</strong><input name="message" placeholder="消息"><button type="submit">发送</button></form>
@@ -131,11 +206,19 @@
             <form data-command-template="weather clear"><strong>天气放晴</strong><button type="submit">执行</button></form>
             <form data-command-template="save-all flush"><strong>保存地图</strong><button type="submit">执行</button></form>
           </div>
+          <section class="panel">
+            <div class="section-head">
+              <h2>执行结果</h2>
+              <button id="clear-player-response-button" type="button" class="ghost">清空</button>
+            </div>
+            <pre id="player-command-response" class="command-response player-command-response">还没有执行玩家命令。</pre>
+          </section>
         </section>
 
         <section id="tab-mods" class="tab-panel">
           <div class="section-head">
             <h2>Mod 管理</h2>
+            <button id="refresh-mods-button" type="button" class="secondary">刷新列表</button>
           </div>
           <form id="mod-upload-form" class="upload-row">
             <input id="mod-files" type="file" name="mods" accept=".jar" multiple>
@@ -147,15 +230,90 @@
 
         <section id="tab-backups" class="tab-panel">
           <div class="section-head">
-            <h2>地图备份</h2>
-            <button id="create-backup-button" type="button">创建备份</button>
+            <h2>备份与迁移</h2>
+            <div class="button-row">
+              <button id="refresh-backups-button" type="button" class="secondary">刷新列表</button>
+            </div>
           </div>
-          <div id="backups-list" class="table-list"></div>
+          <section class="panel backup-create-panel">
+            <div class="backup-actions">
+              <button type="button" data-create-backup="world">备份地图</button>
+              <button type="button" data-create-backup="config" class="secondary">备份配置</button>
+              <button type="button" data-create-backup="migration" class="secondary">创建迁移包</button>
+            </div>
+          </section>
+          <section class="panel backup-remote-panel">
+            <div class="section-head">
+              <h2>远端仓库</h2>
+              <span id="remote-backup-state" class="state-pill stopped">未启用</span>
+            </div>
+            <p id="remote-backup-warning" class="warning-text">备份可能包含 .env、RCON 密码和面板密码，只上传到可信存储。</p>
+            <form id="remote-backup-form" class="remote-backup-form">
+              <div class="field boolean">
+                <label>
+                  <input id="remote-backup-enabled" type="checkbox">
+                  <span>启用远端备份</span>
+                </label>
+              </div>
+              <label class="field">
+                <span>Endpoint</span>
+                <input id="remote-backup-endpoint" type="url" placeholder="https://...">
+              </label>
+              <label class="field">
+                <span>Region</span>
+                <input id="remote-backup-region" type="text" placeholder="auto">
+              </label>
+              <label class="field">
+                <span>Bucket</span>
+                <input id="remote-backup-bucket" type="text" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Prefix</span>
+                <input id="remote-backup-prefix" type="text" placeholder="utopia35">
+              </label>
+              <label class="field">
+                <span>Access Key ID</span>
+                <input id="remote-backup-access-key" type="password" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Secret Access Key</span>
+                <input id="remote-backup-secret-key" type="password" autocomplete="off">
+              </label>
+              <div class="field boolean">
+                <label>
+                  <input id="remote-backup-force-path-style" type="checkbox">
+                  <span>Path style</span>
+                </label>
+              </div>
+              <div class="field boolean">
+                <label>
+                  <input id="remote-backup-auto-upload" type="checkbox">
+                  <span>创建后自动上传</span>
+                </label>
+              </div>
+              <div class="form-actions remote-form-actions">
+                <button type="submit">保存远端配置</button>
+                <button id="test-remote-backup-button" type="button" class="secondary">测试连接</button>
+              </div>
+            </form>
+          </section>
+          <section class="backup-list-section">
+            <div class="section-head">
+              <h2>本地备份</h2>
+            </div>
+            <div id="backups-list" class="table-list"></div>
+          </section>
+          <section class="backup-list-section">
+            <div class="section-head">
+              <h2>远端备份</h2>
+            </div>
+            <div id="remote-backups-list" class="table-list"></div>
+          </section>
         </section>
       </main>
     </section>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260617-backup-remote"></script>
   </body>
 </html>
