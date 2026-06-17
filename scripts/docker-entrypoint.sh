@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 TEMPLATE_DIR="${TEMPLATE_DIR:-/opt/minecraft/server-template}"
 DATA_DIR="${DATA_DIR:-/data}"
+ENV_CONFIG_FILE="${ENV_CONFIG_FILE:-$DATA_DIR/server.env}"
 SERVER_JAR="${SERVER_JAR:-server.jar}"
 SERVER_PROPERTIES_FILE="$DATA_DIR/server.properties"
 
@@ -39,6 +40,32 @@ write_property() {
     else
         printf '%s=%s\n' "$key" "$value" >> "$SERVER_PROPERTIES_FILE"
     fi
+}
+
+load_env_config_file() {
+    if [ ! -f "$ENV_CONFIG_FILE" ]; then
+        return 0
+    fi
+
+    log "Loading runtime config from $ENV_CONFIG_FILE."
+
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        [ -z "$line" ] && continue
+        case "$line" in \#*) continue ;; esac
+        case "$line" in
+            *=*)
+                key="${line%%=*}"
+                value="${line#*=}"
+                if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                    export "$key=$value"
+                else
+                    log "Skipping invalid config key: $key"
+                fi
+                ;;
+        esac
+    done < "$ENV_CONFIG_FILE"
 }
 
 seed_data_dir() {
@@ -152,6 +179,7 @@ build_java_args() {
 }
 
 main() {
+    load_env_config_file
     seed_data_dir
     accept_eula_or_exit
     apply_server_properties

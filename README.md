@@ -181,6 +181,77 @@ docker compose logs -f minecraft
 
 Compose 的运行数据会在仓库目录的 `./data`。
 
+## Web 控制面板
+
+仓库内带了一个可选的 Web 控制面板，用来做常见服务器管理：
+
+- 查看容器状态、健康状态、CPU、内存、数据目录
+- 启动、停止、重启 Minecraft 容器
+- 修改常用运行配置：内存、MOTD、人数、正版验证、白名单、视距、RCON 等
+- 实时查看服务器日志
+- 通过 RCON 输入控制台命令
+- 快捷执行玩家管理命令：`op`、`deop`、白名单、踢出、封禁、广播、保存地图等
+- 上传、禁用、启用、删除 mod
+- 创建和下载地图备份
+
+第一次使用前建议先设置面板密码：
+
+```bash
+./mcctl set PANEL_PASSWORD "换成一个强密码"
+```
+
+启动服务器和面板：
+
+```bash
+./mcctl panel up
+```
+
+只启动面板，不主动启动 Minecraft 服务：
+
+```bash
+./mcctl panel only
+```
+
+查看面板地址：
+
+```bash
+./mcctl panel url
+```
+
+默认地址是：
+
+```text
+http://127.0.0.1:8080
+```
+
+也可以直接使用 Docker Compose：
+
+```bash
+docker compose --profile panel pull
+docker compose --profile panel up -d
+```
+
+面板默认只绑定 `127.0.0.1`，也就是只能从服务器本机访问。如果你要放到公网，请务必先修改 `PANEL_PASSWORD`，并把面板放在 HTTPS、Cloudflare Access、Tailscale、VPN 或其他认证保护后面。不要把带 Docker socket 权限的管理面板裸露到公网。
+
+面板保存配置时会写两个文件：
+
+- `.env`：给 Docker Compose 下次创建或重建容器时使用
+- `data/server.env`：给当前 Minecraft 容器每次启动时读取，优先级高于 Compose 环境变量
+
+因此通过面板修改配置后，通常点一次“重启”就能让配置生效，不需要删除地图数据。上传、禁用或删除 mod 后也需要重启服务器。
+
+RCON 默认关闭。要在面板里输入服务器命令，可以在“配置”页点击“生成并启用 RCON”，保存后重启服务器。
+
+面板相关变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PANEL_BIND` | `127.0.0.1` | 面板监听的宿主机地址 |
+| `PANEL_HOST_PORT` | `8080` | 面板宿主机端口 |
+| `PANEL_PASSWORD` | `change-me` | 面板登录密码 |
+| `PANEL_CONTAINER_NAME` | `utopia35-panel` | 面板容器名 |
+| `ENV_CONFIG_FILE` | `/data/server.env` | Minecraft 启动时读取的运行配置文件 |
+
 ## 备份地图
 
 使用 `mcctl`：

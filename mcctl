@@ -23,6 +23,10 @@ Usage:
   ./mcctl logs
   ./mcctl ps
   ./mcctl backup
+  ./mcctl panel up
+  ./mcctl panel down
+  ./mcctl panel logs
+  ./mcctl panel url
 
 Common settings:
   ./mcctl set EULA true
@@ -206,6 +210,41 @@ case "${1:-}" in
         ;;
     backup)
         backup
+        ;;
+    panel)
+        case "${2:-up}" in
+            up)
+                ensure_env
+                compose --profile panel up -d
+                ;;
+            only)
+                ensure_env
+                compose --profile panel up -d panel
+                ;;
+            down|stop)
+                compose --profile panel stop panel
+                ;;
+            logs)
+                compose --profile panel logs -f --tail=200 panel
+                ;;
+            ps|status)
+                compose --profile panel ps
+                ;;
+            url)
+                ensure_env
+                panel_bind="$(awk -F= '$1 == "PANEL_BIND" { print $2 }' "$ENV_FILE" | tail -n 1)"
+                panel_port="$(awk -F= '$1 == "PANEL_HOST_PORT" { print $2 }' "$ENV_FILE" | tail -n 1)"
+                if [ "${panel_bind:-127.0.0.1}" = "0.0.0.0" ]; then
+                    panel_bind="127.0.0.1"
+                fi
+                printf 'http://%s:%s\n' "${panel_bind:-127.0.0.1}" "${panel_port:-8080}"
+                ;;
+            *)
+                printf 'Unknown panel command: %s\n\n' "$2" >&2
+                usage
+                exit 1
+                ;;
+        esac
         ;;
     help|-h|--help|"")
         usage

@@ -45,6 +45,7 @@ services:
       ENABLE_RCON: ${ENABLE_RCON:-false}
       RCON_PASSWORD: ${RCON_PASSWORD:-}
       SERVER_PROPERTIES: ${SERVER_PROPERTIES:-}
+      ENV_CONFIG_FILE: ${ENV_CONFIG_FILE:-/data/server.env}
     volumes:
       - ./data:/data
     healthcheck:
@@ -53,3 +54,35 @@ services:
       timeout: 5s
       retries: 6
       start_period: 2m
+
+  panel:
+    profiles: ["panel"]
+    image: ${PANEL_IMAGE_NAME:-utopia35-mc-panel}:${PANEL_IMAGE_TAG:-local}
+    build:
+      context: ./panel
+    container_name: ${PANEL_CONTAINER_NAME:-utopia35-panel}
+    restart: ${PANEL_RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${PANEL_BIND:-127.0.0.1}:${PANEL_HOST_PORT:-8080}:8080/tcp"
+    environment:
+      PANEL_PORT: 8080
+      PANEL_BIND: ${PANEL_BIND:-127.0.0.1}
+      PANEL_PASSWORD: ${PANEL_PASSWORD:-change-me}
+      MINECRAFT_CONTAINER: ${CONTAINER_NAME:-utopia35-mc}
+      DATA_DIR: /data
+      WORKSPACE_DIR: /workspace
+      COMPOSE_ENV_FILE: /workspace/.env
+      RUNTIME_ENV_FILE: /data/server.env
+      BACKUP_DIR: /workspace/backups
+      RCON_HOST: ${PANEL_RCON_HOST:-minecraft}
+      RCON_PORT: ${RCON_PORT:-25575}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 6
+      start_period: 20s

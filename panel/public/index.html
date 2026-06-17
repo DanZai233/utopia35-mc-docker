@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Utopia 3.5 控制面板</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <section id="login-view" class="login-shell" hidden>
+      <form id="login-form" class="login-panel">
+        <div>
+          <p class="eyebrow">Utopia 3.5</p>
+          <h1>服务器控制面板</h1>
+        </div>
+        <label>
+          <span>面板密码</span>
+          <input id="login-password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit">登录</button>
+        <p id="login-warning" class="warning-text" hidden>当前仍在使用默认密码，请登录后尽快修改 `.env` 里的 `PANEL_PASSWORD`。</p>
+        <p id="login-error" class="error-text" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="app-view" class="app-shell" hidden>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Utopia 3.5</p>
+          <h1>服务器控制面板</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="server-state" class="state-pill">读取中</span>
+          <button data-action="start">启动</button>
+          <button data-action="restart">重启</button>
+          <button data-action="stop" class="danger">停止</button>
+          <button id="logout-button" class="ghost">退出</button>
+        </div>
+      </header>
+
+      <nav class="tabs" aria-label="控制面板分区">
+        <button class="active" data-tab="overview">状态</button>
+        <button data-tab="config">配置</button>
+        <button data-tab="console">控制台</button>
+        <button data-tab="players">玩家</button>
+        <button data-tab="mods">Mods</button>
+        <button data-tab="backups">备份</button>
+      </nav>
+
+      <main>
+        <section id="tab-overview" class="tab-panel active">
+          <div class="metric-grid">
+            <article>
+              <span>容器</span>
+              <strong id="metric-container">-</strong>
+            </article>
+            <article>
+              <span>健康状态</span>
+              <strong id="metric-health">-</strong>
+            </article>
+            <article>
+              <span>内存</span>
+              <strong id="metric-memory">-</strong>
+            </article>
+            <article>
+              <span>CPU</span>
+              <strong id="metric-cpu">-</strong>
+            </article>
+          </div>
+          <div class="two-column">
+            <section class="panel">
+              <div class="section-head">
+                <h2>当前配置</h2>
+              </div>
+              <dl id="summary-list" class="summary-list"></dl>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <h2>路径</h2>
+              </div>
+              <dl id="paths-list" class="summary-list"></dl>
+            </section>
+          </div>
+          <section id="security-warning" class="notice" hidden></section>
+        </section>
+
+        <section id="tab-config" class="tab-panel">
+          <form id="config-form">
+            <div class="section-head">
+              <h2>运行配置</h2>
+              <div class="button-row">
+                <button type="button" id="setup-rcon-button" class="secondary">生成并启用 RCON</button>
+                <button type="submit">保存配置</button>
+              </div>
+            </div>
+            <div id="config-groups" class="config-groups"></div>
+          </form>
+        </section>
+
+        <section id="tab-console" class="tab-panel">
+          <div class="section-head">
+            <h2>实时控制台</h2>
+            <div class="button-row">
+              <button id="connect-logs-button" type="button" class="secondary">连接日志</button>
+              <button id="clear-logs-button" type="button" class="ghost">清空显示</button>
+            </div>
+          </div>
+          <pre id="log-output" class="log-output"></pre>
+          <form id="command-form" class="command-row">
+            <input id="command-input" type="text" placeholder="输入 RCON 命令，例如 say hello" autocomplete="off">
+            <button type="submit">发送</button>
+          </form>
+          <pre id="command-response" class="command-response"></pre>
+        </section>
+
+        <section id="tab-players" class="tab-panel">
+          <div class="section-head">
+            <h2>玩家快捷命令</h2>
+          </div>
+          <div class="quick-grid">
+            <form data-command-template="list"><strong>在线玩家</strong><button type="submit">查询</button></form>
+            <form data-command-template="say {message}"><strong>广播</strong><input name="message" placeholder="消息"><button type="submit">发送</button></form>
+            <form data-command-template="op {player}"><strong>设为 OP</strong><input name="player" placeholder="玩家名"><button type="submit">执行</button></form>
+            <form data-command-template="deop {player}"><strong>取消 OP</strong><input name="player" placeholder="玩家名"><button type="submit">执行</button></form>
+            <form data-command-template="whitelist add {player}"><strong>加入白名单</strong><input name="player" placeholder="玩家名"><button type="submit">执行</button></form>
+            <form data-command-template="whitelist remove {player}"><strong>移出白名单</strong><input name="player" placeholder="玩家名"><button type="submit">执行</button></form>
+            <form data-command-template="kick {player} {reason}"><strong>踢出玩家</strong><input name="player" placeholder="玩家名"><input name="reason" placeholder="原因"><button type="submit">执行</button></form>
+            <form data-command-template="ban {player} {reason}"><strong>封禁玩家</strong><input name="player" placeholder="玩家名"><input name="reason" placeholder="原因"><button type="submit">执行</button></form>
+            <form data-command-template="pardon {player}"><strong>解除封禁</strong><input name="player" placeholder="玩家名"><button type="submit">执行</button></form>
+            <form data-command-template="time set day"><strong>设置白天</strong><button type="submit">执行</button></form>
+            <form data-command-template="weather clear"><strong>天气放晴</strong><button type="submit">执行</button></form>
+            <form data-command-template="save-all flush"><strong>保存地图</strong><button type="submit">执行</button></form>
+          </div>
+        </section>
+
+        <section id="tab-mods" class="tab-panel">
+          <div class="section-head">
+            <h2>Mod 管理</h2>
+          </div>
+          <form id="mod-upload-form" class="upload-row">
+            <input id="mod-files" type="file" name="mods" accept=".jar" multiple>
+            <label class="inline-check"><input id="overwrite-mods" type="checkbox"> 覆盖同名文件</label>
+            <button type="submit">上传</button>
+          </form>
+          <div id="mods-list" class="table-list"></div>
+        </section>
+
+        <section id="tab-backups" class="tab-panel">
+          <div class="section-head">
+            <h2>地图备份</h2>
+            <button id="create-backup-button" type="button">创建备份</button>
+          </div>
+          <div id="backups-list" class="table-list"></div>
+        </section>
+      </main>
+    </section>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
