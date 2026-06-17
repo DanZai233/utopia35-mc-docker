@@ -32,7 +32,7 @@ services:
       GAMEMODE: ${GAMEMODE:-survival}
       DIFFICULTY: ${DIFFICULTY:-normal}
       MAX_PLAYERS: ${MAX_PLAYERS:-20}
-      ONLINE_MODE: ${ONLINE_MODE:-true}
+      ONLINE_MODE: ${ONLINE_MODE:-false}
       PVP: ${PVP:-true}
       ALLOW_FLIGHT: ${ALLOW_FLIGHT:-true}
       VIEW_DISTANCE: ${VIEW_DISTANCE:-10}
@@ -53,4 +53,3 @@ services:
       timeout: 5s
       retries: 6
       start_period: 2m
-

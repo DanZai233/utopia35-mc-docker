@@ -82,7 +82,7 @@ apply_server_properties() {
     write_property gamemode "${GAMEMODE:-survival}"
     write_property difficulty "${DIFFICULTY:-normal}"
     write_property max-players "${MAX_PLAYERS:-20}"
-    write_property online-mode "${ONLINE_MODE:-true}"
+    write_property online-mode "${ONLINE_MODE:-false}"
     write_property pvp "${PVP:-true}"
     write_property allow-flight "${ALLOW_FLIGHT:-true}"
     write_property view-distance "${VIEW_DISTANCE:-10}"
@@ -174,4 +174,3 @@ main() {
 }
 
 main "$@"
-
