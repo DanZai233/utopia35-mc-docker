@@ -2,9 +2,12 @@
 .env
 data/
 backups/*.tar.gz
+.docker-pack/**
+!.docker-pack/
+!.docker-pack/**/
+!.docker-pack/**/.gitkeep
 
 # Local Minecraft server pack. Keep this out of public Git unless you have
 # redistribution rights for the server jar, mods, config bundle, and assets.
 server-files/*
 !server-files/.gitkeep
-

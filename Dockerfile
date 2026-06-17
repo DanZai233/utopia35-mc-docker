@@ -10,10 +10,26 @@ RUN apt-get update \
 RUN useradd --uid 1000 --create-home --home-dir /home/minecraft --shell /usr/sbin/nologin minecraft
 
 WORKDIR /opt/minecraft
-RUN mkdir -p /opt/minecraft/server-template /data \
+RUN mkdir -p /opt/minecraft/server-template/mods /data \
     && chown -R minecraft:minecraft /opt/minecraft /data
 
 COPY --chown=minecraft:minecraft server-files/ /opt/minecraft/server-template/
+COPY --chown=minecraft:minecraft .docker-pack/mods-00/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-01/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-02/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-03/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-04/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-05/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-06/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-07/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-08/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-09/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-10/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-11/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-12/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-13/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-14/ /opt/minecraft/server-template/mods/
+COPY --chown=minecraft:minecraft .docker-pack/mods-15/ /opt/minecraft/server-template/mods/
 
 RUN set -eux; \
     if [ -n "$SERVER_PACK_URL" ]; then \

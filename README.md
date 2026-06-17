@@ -51,6 +51,8 @@ cd /Users/dan_zai/Git/utopia35-mc-docker
 
 `compose.yaml` 把宿主机 `./data` 挂载到容器 `/data`。第一次启动时，镜像里的服务端模板会复制到 `/data`；之后容器重建、镜像更新都不会删除地图。
 
+`./mcctl prepare` 会把非 mod 服务端文件放到 `server-files/`，并把 `mods/` 拆到 `.docker-pack/mods-00` 到 `.docker-pack/mods-15`。这些目录用于生成较小的 Docker 镜像层，低上行带宽推送 DockerHub 时会更稳；实际 jar 文件仍然被 Git 忽略。
+
 备份地图：
 
 ```bash
@@ -113,4 +115,3 @@ docker compose up -d
 ```
 
 仓库里包含一个 GitHub Actions 发布工作流。如果你希望 Actions 自动构建镜像，需要提供 `SERVER_PACK_URL` 仓库密钥，指向你有权分发的服务端整包 zip。
-

@@ -13,6 +13,7 @@ server-files/world_the_end
 server-files/logs
 server-files/crash-reports
 server-files/backups
+server-files/mods
 server-files/eula.txt
 server-files/server.properties
 server-files/usercache.json
@@ -21,4 +22,3 @@ server-files/whitelist.json
 server-files/banned-players.json
 server-files/banned-ips.json
 server-files/*.log
-

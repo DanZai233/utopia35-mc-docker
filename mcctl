@@ -5,8 +5,10 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$PROJECT_DIR/.env"
 ENV_EXAMPLE="$PROJECT_DIR/.env.example"
 SERVER_FILES_DIR="$PROJECT_DIR/server-files"
+PACK_DIR="$PROJECT_DIR/.docker-pack"
 DATA_DIR="$PROJECT_DIR/data"
 BACKUP_DIR="$PROJECT_DIR/backups"
+MOD_SHARDS=16
 
 usage() {
     cat <<'EOF'
@@ -83,11 +85,13 @@ prepare() {
         exit 1
     fi
 
-    mkdir -p "$SERVER_FILES_DIR"
+    rm -rf "$SERVER_FILES_DIR" "$PACK_DIR"
+    mkdir -p "$SERVER_FILES_DIR" "$PACK_DIR"
 
     rsync -a --delete \
         --exclude '.DS_Store' \
         --exclude 'zulu-21' \
+        --exclude 'mods' \
         --exclude 'world' \
         --exclude 'world_nether' \
         --exclude 'world_the_end' \
@@ -107,7 +111,28 @@ prepare() {
     rm -f "$SERVER_FILES_DIR"/*.bat
     touch "$SERVER_FILES_DIR/.gitkeep"
 
+    local shard_index
+    for ((shard_index = 0; shard_index < MOD_SHARDS; shard_index++)); do
+        local shard_name
+        printf -v shard_name 'mods-%02d' "$shard_index"
+        mkdir -p "$PACK_DIR/$shard_name"
+        touch "$PACK_DIR/$shard_name/.gitkeep"
+    done
+
+    local mod_count=0
+    if [ -d "$source_dir/mods" ]; then
+        while IFS= read -r mod_file; do
+            [ -n "$mod_file" ] || continue
+
+            local shard_name
+            printf -v shard_name 'mods-%02d' "$((mod_count % MOD_SHARDS))"
+            rsync -a "$mod_file" "$PACK_DIR/$shard_name"/
+            mod_count=$((mod_count + 1))
+        done < <(find "$source_dir/mods" -maxdepth 1 -type f | LC_ALL=C sort)
+    fi
+
     printf 'Prepared server files in %s\n' "$SERVER_FILES_DIR"
+    printf 'Prepared %d mod files across %d Docker layer shards in %s\n' "$mod_count" "$MOD_SHARDS" "$PACK_DIR"
 }
 
 backup() {
@@ -191,4 +216,3 @@ case "${1:-}" in
         exit 1
         ;;
 esac
-
