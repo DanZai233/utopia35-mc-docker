@@ -209,6 +209,39 @@
             </div>
             <div id="online-player-list" class="player-list"></div>
           </section>
+          <section class="panel item-cleanup-panel">
+            <div class="section-head">
+              <h2>掉落物清理</h2>
+              <span id="item-cleanup-state" class="state-pill stopped">未启用</span>
+            </div>
+            <form id="item-cleanup-form" class="remote-backup-form">
+              <div class="field boolean">
+                <label>
+                  <input id="item-cleanup-enabled" type="checkbox">
+                  <span>自动清理掉落物</span>
+                </label>
+              </div>
+              <label class="field">
+                <span>清理间隔（分钟）</span>
+                <input id="item-cleanup-interval" type="number" min="5" max="360" step="1">
+              </label>
+              <label class="field">
+                <span>提前提醒（秒）</span>
+                <input id="item-cleanup-warning" type="number" min="0" max="300" step="1">
+              </label>
+              <div class="field boolean">
+                <label>
+                  <input id="item-cleanup-broadcast" type="checkbox">
+                  <span>广播提醒</span>
+                </label>
+              </div>
+              <div class="form-actions remote-form-actions">
+                <button type="submit">保存清理配置</button>
+                <button id="run-item-cleanup-button" type="button" class="danger">立即清理</button>
+              </div>
+            </form>
+            <p id="item-cleanup-meta" class="form-message">上次：- · 下次：-</p>
+          </section>
           <div class="quick-grid">
             <form data-command-template="list"><strong>在线玩家</strong><button type="submit">查询</button></form>
             <form data-command-template="say {message}"><strong>广播</strong><input name="message" placeholder="消息"><button type="submit">发送</button></form>

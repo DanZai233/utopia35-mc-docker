@@ -13,6 +13,7 @@ const state = {
   lastPlayers: [],
   lastPlayerDetail: null,
   auditEntries: [],
+  itemCleanupConfig: null,
   remoteBackupConfig: null,
   scheduledBackupConfig: null,
   whitelistEnabled: false,
@@ -267,6 +268,10 @@ function renderStatus(status) {
   if (status.scheduledBackup) {
     state.scheduledBackupConfig = status.scheduledBackup;
     renderScheduledBackupConfig(status.scheduledBackup);
+  }
+  if (status.itemCleanup) {
+    state.itemCleanupConfig = status.itemCleanup;
+    renderItemCleanupConfig(status.itemCleanup);
   }
 
   const warning = $("#security-warning");
@@ -699,6 +704,8 @@ function auditActionLabel(action) {
     "backup.schedule.save": "保存定时备份",
     "chat.send": "面板聊天",
     "config.save": "保存配置",
+    "itemCleanup.config.save": "保存掉落物清理",
+    "itemCleanup.run": "清理掉落物",
     "mods.delete": "删除 Mod",
     "mods.toggle": "切换 Mod",
     "mods.upload": "上传 Mod",
@@ -1102,6 +1109,60 @@ async function saveScheduledBackupConfig(event) {
   });
 }
 
+function renderItemCleanupConfig(config = {}) {
+  const statePill = $("#item-cleanup-state");
+  if (!statePill) return;
+  statePill.className = "state-pill";
+  if (config.enabled) {
+    statePill.textContent = `已启用 / ${config.intervalMinutes || 30} 分钟`;
+    statePill.classList.add("running");
+  } else {
+    statePill.textContent = "未启用";
+    statePill.classList.add("stopped");
+  }
+  $("#item-cleanup-enabled").checked = Boolean(config.enabled);
+  $("#item-cleanup-interval").value = config.intervalMinutes || 30;
+  $("#item-cleanup-warning").value = config.warningSeconds ?? 30;
+  $("#item-cleanup-broadcast").checked = config.broadcast !== false;
+  $("#item-cleanup-meta").textContent = `上次：${formatDate(config.lastRunAt)} · 下次：${formatDate(config.nextRunAt)}`;
+}
+
+function readItemCleanupForm() {
+  return {
+    enabled: $("#item-cleanup-enabled").checked,
+    intervalMinutes: Number($("#item-cleanup-interval").value || 30),
+    warningSeconds: Number($("#item-cleanup-warning").value || 30),
+    broadcast: $("#item-cleanup-broadcast").checked
+  };
+}
+
+async function saveItemCleanupConfig(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type='submit']");
+  await withButtonBusy(button, "保存中", async () => {
+    const result = await api("/api/item-cleanup", {
+      method: "POST",
+      body: readItemCleanupForm()
+    });
+    state.itemCleanupConfig = result.config;
+    renderItemCleanupConfig(result.config);
+    showToast("掉落物清理配置已保存。");
+    await loadAuditLog({ silent: true });
+  });
+}
+
+async function runItemCleanupNow() {
+  const button = $("#run-item-cleanup-button");
+  if (!confirm("现在清理所有已加载区块中的地上掉落物？玩家刚掉落的物品也会被删除。")) return;
+  await withButtonBusy(button, "清理中", async () => {
+    const result = await api("/api/item-cleanup/run", { method: "POST" });
+    state.itemCleanupConfig = result.config;
+    renderItemCleanupConfig(result.config);
+    showToast(`已清理 ${result.result.count} 个掉落物实体。`);
+    await loadAuditLog({ silent: true });
+  });
+}
+
 function readRemoteBackupForm() {
   return {
     enabled: $("#remote-backup-enabled").checked,
@@ -1234,6 +1295,8 @@ function bindEvents() {
   $("#config-form").addEventListener("submit", (event) => saveConfig(event).catch(showOperationError));
   $("#panel-password-form").addEventListener("submit", (event) => changePanelPassword(event).catch(showOperationError));
   $("#scheduled-backup-form").addEventListener("submit", (event) => saveScheduledBackupConfig(event).catch(showOperationError));
+  $("#item-cleanup-form").addEventListener("submit", (event) => saveItemCleanupConfig(event).catch(showOperationError));
+  $("#run-item-cleanup-button").addEventListener("click", () => runItemCleanupNow().catch(showOperationError));
   $("#remote-backup-form").addEventListener("submit", (event) => saveRemoteBackupConfig(event).catch(showOperationError));
   $("#test-remote-backup-button").addEventListener("click", () => testRemoteBackup().catch(showOperationError));
   $("#setup-rcon-button").addEventListener("click", async () => {

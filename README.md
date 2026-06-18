@@ -290,6 +290,10 @@ http://127.0.0.1:8100
 | `PLAYER_DAILY_KIT_COMMANDS` | `give {player} minecraft:bread 16;give {player} minecraft:torch 16` | 每日礼包命令模板，使用 `;` 分隔多条命令 |
 | `PLAYER_SPAWN_DIMENSION` | `minecraft:overworld` | 玩家中心“回出生点”的目标维度 |
 | `PLAYER_SPAWN_X/Y/Z` | `0 / 80 / 0` | 玩家中心“回出生点”的目标坐标 |
+| `ITEM_CLEANUP_ENABLED` | `false` | 是否自动清理已加载区块里的地上掉落物 |
+| `ITEM_CLEANUP_INTERVAL_MINUTES` | `30` | 掉落物自动清理间隔，范围 5-360 分钟 |
+| `ITEM_CLEANUP_WARNING_SECONDS` | `30` | 清理前提前广播提醒秒数，`0` 表示不提前提醒 |
+| `ITEM_CLEANUP_BROADCAST` | `true` | 清理前/清理时是否向游戏内广播 |
 | `SCHEDULED_BACKUP_ENABLED` | `false` | 是否启用每天定时地图备份 |
 | `SCHEDULED_BACKUP_TIME` | `04:30` | 定时备份执行时间，使用面板容器本地时间 |
 | `SCHEDULED_BACKUP_MIGRATION_WEEKLY` | `false` | 是否每周额外创建迁移包 |

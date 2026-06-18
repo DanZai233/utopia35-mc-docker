@@ -50,6 +50,7 @@ const BLUEMAP_MODRINTH_API = "https://api.modrinth.com/v2/project/bluemap/versio
 const BLUEMAP_PROJECT_URL = "https://modrinth.com/plugin/bluemap";
 const PLAYER_AUTO_WHITELIST = envBool(process.env.PLAYER_AUTO_WHITELIST, false);
 let scheduledBackupConfig = readScheduledBackupConfigFromEnv(process.env);
+let itemCleanupConfig = readItemCleanupConfigFromEnv(process.env);
 let remoteBackupConfig = readRemoteBackupConfigFromEnv(process.env);
 
 const docker = new Docker({ socketPath: DOCKER_SOCKET });
@@ -79,6 +80,11 @@ const PLAYER_SPAWN_LOCATION = {
   x: readCoordinate(process.env.PLAYER_SPAWN_X, 0),
   y: readCoordinate(process.env.PLAYER_SPAWN_Y, 80),
   z: readCoordinate(process.env.PLAYER_SPAWN_Z, 0)
+};
+const itemCleanupState = {
+  nextRunAt: 0,
+  lastRunAt: "",
+  warnedFor: 0
 };
 const chatHistory = [];
 const playerChatRate = new Map();
@@ -271,6 +277,8 @@ async function loadPanelPasswordFromEnv() {
   if (values.PANEL_PASSWORD) panelPassword = values.PANEL_PASSWORD;
   remoteBackupConfig = readRemoteBackupConfigFromEnv({ ...process.env, ...values });
   scheduledBackupConfig = readScheduledBackupConfigFromEnv({ ...process.env, ...values });
+  itemCleanupConfig = readItemCleanupConfigFromEnv({ ...process.env, ...values });
+  scheduleNextItemCleanup();
 }
 
 function encodeEnvValue(value) {
@@ -1049,6 +1057,12 @@ function normalizeRetention(value, fallback = 7) {
   return count;
 }
 
+function normalizeIntegerRange(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) return fallback;
+  return number;
+}
+
 function readScheduledBackupConfigFromEnv(source) {
   return {
     enabled: envBool(source.SCHEDULED_BACKUP_ENABLED, false),
@@ -1100,6 +1114,50 @@ async function saveScheduledBackupConfig(payload) {
   }, { seedFrom: EXAMPLE_ENV_FILE });
   scheduledBackupConfig = config;
   return publicScheduledBackupConfig(config);
+}
+
+function readItemCleanupConfigFromEnv(source) {
+  return {
+    enabled: envBool(source.ITEM_CLEANUP_ENABLED, false),
+    intervalMinutes: normalizeIntegerRange(source.ITEM_CLEANUP_INTERVAL_MINUTES, 30, 5, 360),
+    warningSeconds: normalizeIntegerRange(source.ITEM_CLEANUP_WARNING_SECONDS, 30, 0, 300),
+    broadcast: envBool(source.ITEM_CLEANUP_BROADCAST, true),
+    lastRunAt: String(source.ITEM_CLEANUP_LAST_RUN || "")
+  };
+}
+
+function publicItemCleanupConfig(config = itemCleanupConfig) {
+  return {
+    enabled: config.enabled,
+    intervalMinutes: config.intervalMinutes,
+    warningSeconds: config.warningSeconds,
+    broadcast: config.broadcast,
+    lastRunAt: itemCleanupState.lastRunAt || config.lastRunAt || "",
+    nextRunAt: itemCleanupState.nextRunAt ? new Date(itemCleanupState.nextRunAt).toISOString() : ""
+  };
+}
+
+function normalizeItemCleanupPayload(payload = {}) {
+  return {
+    enabled: Boolean(payload.enabled),
+    intervalMinutes: normalizeIntegerRange(payload.intervalMinutes, itemCleanupConfig.intervalMinutes || 30, 5, 360),
+    warningSeconds: normalizeIntegerRange(payload.warningSeconds, itemCleanupConfig.warningSeconds || 30, 0, 300),
+    broadcast: payload.broadcast !== false,
+    lastRunAt: itemCleanupConfig.lastRunAt || ""
+  };
+}
+
+async function saveItemCleanupConfig(payload) {
+  const config = normalizeItemCleanupPayload(payload);
+  await writeEnvFile(COMPOSE_ENV_FILE, {
+    ITEM_CLEANUP_ENABLED: config.enabled ? "true" : "false",
+    ITEM_CLEANUP_INTERVAL_MINUTES: String(config.intervalMinutes),
+    ITEM_CLEANUP_WARNING_SECONDS: String(config.warningSeconds),
+    ITEM_CLEANUP_BROADCAST: config.broadcast ? "true" : "false"
+  }, { seedFrom: EXAMPLE_ENV_FILE });
+  itemCleanupConfig = config;
+  scheduleNextItemCleanup();
+  return publicItemCleanupConfig(config);
 }
 
 function publicRemoteBackupConfig(config = remoteBackupConfig) {
@@ -2115,12 +2173,42 @@ function isRconFailureResponse(response) {
   return /(no player was found|no entity was found|unknown or incomplete command|incorrect argument|that player cannot be found|failed)/i.test(String(response || ""));
 }
 
+function isNoEntityResponse(response) {
+  return /no entity was found|no entities were found/i.test(String(response || ""));
+}
+
 async function sendCheckedRconCommand(command, publicMessage = "命令执行失败。") {
   const response = await sendRconCommand(command);
   if (isRconFailureResponse(response)) {
     throw createPublicError(400, "RCON_COMMAND_FAILED", `${publicMessage}${response ? ` ${response}` : ""}`);
   }
   return response;
+}
+
+function parseKilledEntityCount(response) {
+  const text = String(response || "");
+  const match = text.match(/Killed\s+(\d+)\s+entit(?:y|ies)/i);
+  if (match) return Number(match[1]);
+  if (isNoEntityResponse(text)) return 0;
+  return null;
+}
+
+async function clearDroppedItems(options = {}) {
+  if (itemCleanupConfig.broadcast) {
+    const prefix = options.manual ? "管理员正在清理掉落物" : "正在自动清理掉落物";
+    await sendRconCommand(`say ${prefix}，可能会删除地上的物品。`);
+  }
+  const response = await sendRconCommand("kill @e[type=item]");
+  const count = parseKilledEntityCount(response);
+  if (count === null && isRconFailureResponse(response)) {
+    throw createPublicError(400, "ITEM_CLEANUP_FAILED", `掉落物清理失败。${response}`);
+  }
+  const now = new Date().toISOString();
+  itemCleanupState.lastRunAt = now;
+  itemCleanupConfig.lastRunAt = now;
+  await writeEnvFile(COMPOSE_ENV_FILE, { ITEM_CLEANUP_LAST_RUN: now }, { seedFrom: EXAMPLE_ENV_FILE });
+  scheduleNextItemCleanup();
+  return { response, count: count ?? 0, lastRunAt: now, nextRunAt: publicItemCleanupConfig().nextRunAt };
 }
 
 function normalizeChatMessage(value) {
@@ -2234,6 +2322,7 @@ async function buildStatus() {
     },
     remoteBackup: publicRemoteBackupConfig(),
     scheduledBackup: publicScheduledBackupConfig(),
+    itemCleanup: publicItemCleanupConfig(),
     container: inspect
       ? {
           name: inspect.Name.replace(/^\//, ""),
@@ -2528,6 +2617,28 @@ app.get("/api/players/:name/detail", asyncHandler(async (req, res) => {
   res.json({ detail });
 }));
 
+app.get("/api/item-cleanup", asyncHandler(async (_req, res) => {
+  res.json({ config: publicItemCleanupConfig() });
+}));
+
+app.post("/api/item-cleanup", asyncHandler(async (req, res) => {
+  const config = await withAudit({
+    action: "itemCleanup.config.save",
+    target: "dropped-items",
+    detail: req.body || {}
+  }, () => saveItemCleanupConfig(req.body || {}));
+  res.json({ ok: true, config });
+}));
+
+app.post("/api/item-cleanup/run", asyncHandler(async (_req, res) => {
+  const result = await withAudit({
+    action: "itemCleanup.run",
+    target: "dropped-items",
+    detail: { manual: true }
+  }, () => clearDroppedItems({ manual: true }));
+  res.json({ ok: true, result, config: publicItemCleanupConfig() });
+}));
+
 app.get("/api/audit-log", asyncHandler(async (req, res) => {
   res.json({ entries: await listAuditLogs(req.query.limit) });
 }));
@@ -2800,6 +2911,7 @@ const logsWss = new WebSocket.Server({ noServer: true });
 const chatWss = new WebSocket.Server({ noServer: true });
 const playerChatWss = new WebSocket.Server({ noServer: true });
 let scheduledBackupRunning = false;
+let itemCleanupRunning = false;
 
 function broadcastChatMessage(message) {
   const payload = JSON.stringify(message);
@@ -3008,6 +3120,52 @@ async function checkScheduledBackups() {
 setInterval(() => {
   checkScheduledBackups().catch((error) => console.error("[scheduled-backup] failed:", error));
 }, 60 * 1000).unref();
+
+function scheduleNextItemCleanup(from = Date.now()) {
+  itemCleanupState.warnedFor = 0;
+  if (!itemCleanupConfig.enabled) {
+    itemCleanupState.nextRunAt = 0;
+    return;
+  }
+  itemCleanupState.nextRunAt = from + itemCleanupConfig.intervalMinutes * 60 * 1000;
+}
+
+async function checkItemCleanup() {
+  if (!itemCleanupConfig.enabled || itemCleanupRunning) return;
+  if (!itemCleanupState.nextRunAt) scheduleNextItemCleanup();
+  const now = Date.now();
+  const warningMs = itemCleanupConfig.warningSeconds * 1000;
+  if (
+    itemCleanupConfig.broadcast &&
+    warningMs > 0 &&
+    itemCleanupState.nextRunAt - now <= warningMs &&
+    now < itemCleanupState.nextRunAt &&
+    itemCleanupState.warnedFor !== itemCleanupState.nextRunAt
+  ) {
+    itemCleanupState.warnedFor = itemCleanupState.nextRunAt;
+    await sendRconCommand(`say ${itemCleanupConfig.warningSeconds} 秒后自动清理地上掉落物，请及时捡起重要物品。`);
+  }
+  if (now < itemCleanupState.nextRunAt) return;
+
+  itemCleanupRunning = true;
+  try {
+    const result = await withAudit({
+      action: "itemCleanup.run",
+      target: "dropped-items",
+      detail: { manual: false }
+    }, () => clearDroppedItems({ manual: false }));
+    console.log(`[item-cleanup] cleared ${result.count} dropped item entities`);
+  } catch (error) {
+    console.error("[item-cleanup] failed:", error);
+    scheduleNextItemCleanup();
+  } finally {
+    itemCleanupRunning = false;
+  }
+}
+
+setInterval(() => {
+  checkItemCleanup().catch((error) => console.error("[item-cleanup] failed:", error));
+}, 10 * 1000).unref();
 
 loadPanelPasswordFromEnv().catch((error) => {
   console.warn(`Unable to load PANEL_PASSWORD from ${COMPOSE_ENV_FILE}: ${error.message}`);
