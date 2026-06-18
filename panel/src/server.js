@@ -36,6 +36,7 @@ const RUNTIME_ENV_FILE = process.env.RUNTIME_ENV_FILE || path.join(DATA_DIR, "se
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(WORKSPACE_DIR, "backups");
 const EXAMPLE_ENV_FILE = process.env.EXAMPLE_ENV_FILE || path.join(WORKSPACE_DIR, ".env.example");
 const PLAYER_USERS_FILE = process.env.PLAYER_USERS_FILE || path.join(DATA_DIR, "player-users.json");
+const AUDIT_LOG_FILE = process.env.AUDIT_LOG_FILE || path.join(DATA_DIR, "audit-log.json");
 const MODS_DIR = path.join(DATA_DIR, "mods");
 const SERVER_PROPERTIES_FILE = path.join(DATA_DIR, "server.properties");
 const DOCKER_SOCKET = process.env.DOCKER_SOCKET || "/var/run/docker.sock";
@@ -66,6 +67,7 @@ const PLAYER_SESSION_COOKIE = "utopia35_player";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PLAYER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CHAT_HISTORY_LIMIT = 200;
+const AUDIT_LOG_LIMIT = 500;
 const PLAYER_ACTION_COOLDOWN_MS = Number(process.env.PLAYER_ACTION_COOLDOWN_SECONDS || 60) * 1000;
 const PLAYER_DAILY_KIT_COOLDOWN_MS = Number(process.env.PLAYER_DAILY_KIT_HOURS || 24) * 60 * 60 * 1000;
 const PLAYER_DAILY_KIT_COMMANDS = (process.env.PLAYER_DAILY_KIT_COMMANDS || "give {player} minecraft:bread 16;give {player} minecraft:torch 16")
@@ -441,6 +443,97 @@ async function writePlayerStore(store) {
   await fsp.rename(tmp, PLAYER_USERS_FILE);
 }
 
+function createEmptyAuditStore() {
+  return { version: 1, entries: [] };
+}
+
+async function readAuditStore() {
+  try {
+    const store = JSON.parse(await fsp.readFile(AUDIT_LOG_FILE, "utf8"));
+    return {
+      version: 1,
+      entries: Array.isArray(store.entries) ? store.entries : []
+    };
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return createEmptyAuditStore();
+    throw error;
+  }
+}
+
+async function writeAuditStore(store) {
+  await fsp.mkdir(path.dirname(AUDIT_LOG_FILE), { recursive: true });
+  const tmp = `${AUDIT_LOG_FILE}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  const entries = (store.entries || []).slice(-AUDIT_LOG_LIMIT);
+  await fsp.writeFile(tmp, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`, "utf8");
+  await fsp.rename(tmp, AUDIT_LOG_FILE);
+}
+
+function sanitizeAuditValue(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (Array.isArray(value)) return value.slice(0, 40).map(sanitizeAuditValue);
+  if (typeof value === "object") {
+    const clean = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (/password|secret|access.?key|token|credential/i.test(key)) {
+        clean[key] = item ? "[redacted]" : "";
+      } else {
+        clean[key] = sanitizeAuditValue(item);
+      }
+    }
+    return clean;
+  }
+  const text = String(value);
+  return text.length > 500 ? `${text.slice(0, 500)}...` : value;
+}
+
+function sanitizeAuditCommand(command) {
+  const text = String(command || "").trim().slice(0, 500);
+  if (!/(password|secret|token|key)/i.test(text)) return text;
+  return text.replace(/((?:password|secret|token|key)[^\\s=]*\\s*[= ]\\s*)[^\\s]+/gi, "$1[redacted]");
+}
+
+async function appendAuditLog(entry) {
+  const store = await readAuditStore();
+  store.entries.push({
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    actorType: entry.actorType || "admin",
+    actor: entry.actor || "面板",
+    action: entry.action || "unknown",
+    target: entry.target || "",
+    ok: entry.ok !== false,
+    detail: sanitizeAuditValue(entry.detail || {}),
+    error: entry.error ? String(entry.error).slice(0, 500) : ""
+  });
+  await writeAuditStore(store);
+}
+
+async function safeAppendAuditLog(entry) {
+  try {
+    await appendAuditLog(entry);
+  } catch (error) {
+    console.warn(`[audit] unable to write audit log: ${error.message}`);
+  }
+}
+
+async function listAuditLogs(limit = 120) {
+  const store = await readAuditStore();
+  const count = Math.max(1, Math.min(Number(limit) || 120, AUDIT_LOG_LIMIT));
+  return store.entries.slice(-count).reverse();
+}
+
+async function withAudit(entry, task) {
+  try {
+    const result = await task();
+    await safeAppendAuditLog({ ...entry, ok: true });
+    return result;
+  } catch (error) {
+    await safeAppendAuditLog({ ...entry, ok: false, error: error.message });
+    throw error;
+  }
+}
+
 async function updatePlayerStore(mutator) {
   const store = await readPlayerStore();
   const result = await mutator(store);
@@ -686,6 +779,81 @@ function parseDataGetString(response) {
   return match?.[1] || "";
 }
 
+function parseDataGetNumber(response) {
+  const text = String(response || "");
+  const quoted = text.match(/has the following entity data:\s*"?(-?\d+(?:\.\d+)?)(?:[bdfsli])?"?/i);
+  if (quoted) return Number(quoted[1]);
+  const fallback = text.match(/(-?\d+(?:\.\d+)?)(?:[bdfsli])?\s*$/i);
+  return fallback ? Number(fallback[1]) : null;
+}
+
+function splitTopLevelList(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const items = [];
+  let start = 0;
+  let depth = 0;
+  let quote = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const prev = text[index - 1];
+    if (quote) {
+      if (char === quote && prev !== "\\") quote = "";
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "{" || char === "[") depth += 1;
+    if (char === "}" || char === "]") depth -= 1;
+    if (char === "," && depth === 0) {
+      items.push(text.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  const last = text.slice(start).trim();
+  if (last) items.push(last);
+  return items;
+}
+
+function parseNbtListPayload(response) {
+  const text = String(response || "");
+  const marker = "has the following entity data:";
+  const markerIndex = text.lastIndexOf(marker);
+  const payload = markerIndex === -1 ? text : text.slice(markerIndex + marker.length);
+  const start = payload.indexOf("[");
+  const end = payload.lastIndexOf("]");
+  if (start === -1 || end === -1 || end <= start) return "";
+  return payload.slice(start + 1, end);
+}
+
+function readNbtString(item, key) {
+  const quoted = item.match(new RegExp(`${key}:\\s*"([^"]*)"`));
+  if (quoted) return quoted[1];
+  const unquoted = item.match(new RegExp(`${key}:\\s*([^,}]+)`));
+  return unquoted ? unquoted[1].trim().replace(/[bdfsli]$/i, "") : "";
+}
+
+function readNbtNumber(item, key) {
+  const raw = readNbtString(item, key);
+  if (raw === "") return null;
+  const number = Number(String(raw).replace(/[bdfsli]$/i, ""));
+  return Number.isFinite(number) ? number : null;
+}
+
+function parseInventoryResponse(response) {
+  return splitTopLevelList(parseNbtListPayload(response))
+    .map((item) => ({
+      id: readNbtString(item, "id"),
+      count: readNbtNumber(item, "count") ?? readNbtNumber(item, "Count") ?? 0,
+      slot: readNbtNumber(item, "Slot"),
+      raw: item
+    }))
+    .filter((item) => item.id)
+    .sort((a, b) => (a.slot ?? 999) - (b.slot ?? 999));
+}
+
 function formatCoord(value) {
   return Number(value).toFixed(2).replace(/\.?0+$/, "");
 }
@@ -715,6 +883,40 @@ async function getPlayerLocation(playerName) {
     throw createPublicError(400, "PLAYER_LOCATION_UNAVAILABLE", "读取玩家位置失败，请确认玩家当前在线。");
   }
   return { ...pos, dimension };
+}
+
+async function getPlayerDetail(playerNameInput) {
+  const playerName = normalizeMinecraftName(playerNameInput);
+  const posResponse = await sendCheckedRconCommand(`data get entity ${playerName} Pos`, "读取玩家坐标失败，请确认玩家在线。");
+  const dimensionResponse = await sendCheckedRconCommand(`data get entity ${playerName} Dimension`, "读取玩家维度失败，请确认玩家在线。");
+  const healthResponse = await sendCheckedRconCommand(`data get entity ${playerName} Health`, "读取玩家生命值失败，请确认玩家在线。");
+  const foodResponse = await sendCheckedRconCommand(`data get entity ${playerName} foodLevel`, "读取玩家饥饿值失败，请确认玩家在线。");
+  const xpResponse = await sendCheckedRconCommand(`data get entity ${playerName} XpLevel`, "读取玩家经验等级失败，请确认玩家在线。");
+  const selectedSlotResponse = await sendCheckedRconCommand(`data get entity ${playerName} SelectedItemSlot`, "读取玩家手持栏失败，请确认玩家在线。");
+  const inventoryResponse = await sendCheckedRconCommand(`data get entity ${playerName} Inventory`, "读取玩家背包失败，请确认玩家在线。");
+  const enderItemsResponse = await sendCheckedRconCommand(`data get entity ${playerName} EnderItems`, "读取玩家末影箱失败，请确认玩家在线。");
+  const location = {
+    ...(parseDataGetVector(posResponse) || { x: null, y: null, z: null }),
+    dimension: parseDataGetString(dimensionResponse)
+  };
+  const inventory = parseInventoryResponse(inventoryResponse);
+  const selectedSlot = parseDataGetNumber(selectedSlotResponse);
+  const selectedItem = inventory.find((item) => item.slot === selectedSlot) || null;
+  return {
+    name: playerName,
+    location,
+    health: parseDataGetNumber(healthResponse),
+    foodLevel: parseDataGetNumber(foodResponse),
+    xpLevel: parseDataGetNumber(xpResponse),
+    selectedSlot,
+    selectedItem,
+    inventory,
+    enderItems: parseInventoryResponse(enderItemsResponse),
+    raw: {
+      inventory: inventoryResponse,
+      enderItems: enderItemsResponse
+    }
+  };
 }
 
 async function setPlayerHome(userId) {
@@ -2142,7 +2344,13 @@ app.post("/api/player/profile", requirePlayerAuth, asyncHandler(async (req, res)
 }));
 
 app.post("/api/player/whitelist/request", requirePlayerAuth, asyncHandler(async (req, res) => {
-  const requested = await requestPlayerWhitelist(req.playerSession.userId);
+  const actor = await findPlayerUserById(req.playerSession.userId);
+  const requested = await withAudit({
+    actorType: "player",
+    actor: actor?.minecraftName || actor?.username || req.playerSession.userId,
+    action: "player.requestWhitelist",
+    target: actor?.minecraftName || ""
+  }, () => requestPlayerWhitelist(req.playerSession.userId));
   let user = requested;
   let autoApproved = false;
   if (PLAYER_AUTO_WHITELIST && requested.minecraftName && requested.status !== "approved") {
@@ -2157,24 +2365,57 @@ app.post("/api/player/whitelist/request", requirePlayerAuth, asyncHandler(async 
 }));
 
 app.post("/api/player/actions/set-home", requirePlayerAuth, asyncHandler(async (req, res) => {
-  const user = await setPlayerHome(req.playerSession.userId);
+  const actor = await findPlayerUserById(req.playerSession.userId);
+  const user = await withAudit({
+    actorType: "player",
+    actor: actor?.minecraftName || actor?.username || req.playerSession.userId,
+    action: "player.setHome",
+    target: actor?.minecraftName || ""
+  }, () => setPlayerHome(req.playerSession.userId));
   res.json({ ok: true, user: publicPlayerUser(user) });
 }));
 
 app.post("/api/player/actions/home", requirePlayerAuth, asyncHandler(async (req, res) => {
-  res.json({ ok: true, result: await teleportPlayerHome(req.playerSession.userId), user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
+  const actor = await findPlayerUserById(req.playerSession.userId);
+  const result = await withAudit({
+    actorType: "player",
+    actor: actor?.minecraftName || actor?.username || req.playerSession.userId,
+    action: "player.teleportHome",
+    target: actor?.minecraftName || ""
+  }, () => teleportPlayerHome(req.playerSession.userId));
+  res.json({ ok: true, result, user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
 }));
 
 app.post("/api/player/actions/spawn", requirePlayerAuth, asyncHandler(async (req, res) => {
-  res.json({ ok: true, result: await teleportPlayerSpawn(req.playerSession.userId), user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
+  const actor = await findPlayerUserById(req.playerSession.userId);
+  const result = await withAudit({
+    actorType: "player",
+    actor: actor?.minecraftName || actor?.username || req.playerSession.userId,
+    action: "player.teleportSpawn",
+    target: actor?.minecraftName || ""
+  }, () => teleportPlayerSpawn(req.playerSession.userId));
+  res.json({ ok: true, result, user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
 }));
 
 app.post("/api/player/actions/rescue", requirePlayerAuth, asyncHandler(async (req, res) => {
-  res.json({ ok: true, result: await rescuePlayer(req.playerSession.userId), user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
+  const actor = await findPlayerUserById(req.playerSession.userId);
+  const result = await withAudit({
+    actorType: "player",
+    actor: actor?.minecraftName || actor?.username || req.playerSession.userId,
+    action: "player.rescue",
+    target: actor?.minecraftName || ""
+  }, () => rescuePlayer(req.playerSession.userId));
+  res.json({ ok: true, result, user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
 }));
 
 app.post("/api/player/actions/daily-kit", requirePlayerAuth, asyncHandler(async (req, res) => {
-  const user = await claimDailyKit(req.playerSession.userId);
+  const actor = await findPlayerUserById(req.playerSession.userId);
+  const user = await withAudit({
+    actorType: "player",
+    actor: actor?.minecraftName || actor?.username || req.playerSession.userId,
+    action: "player.dailyKit",
+    target: actor?.minecraftName || ""
+  }, () => claimDailyKit(req.playerSession.userId));
   res.json({ ok: true, user: publicPlayerUser(user) });
 }));
 
@@ -2191,7 +2432,13 @@ app.post("/api/player/chat/send", requirePlayerAuth, asyncHandler(async (req, re
   if (!user || user.status === "disabled") {
     throw createPublicError(403, "PLAYER_DISABLED", "这个玩家账号不可用。");
   }
-  res.json({ ok: true, message: await sendPlayerChatMessage(user, req.body?.message) });
+  const message = await withAudit({
+    actorType: "player",
+    actor: user.minecraftName || user.username,
+    action: "player.chat.send",
+    target: "server-chat"
+  }, () => sendPlayerChatMessage(user, req.body?.message));
+  res.json({ ok: true, message });
 }));
 
 app.use("/api", requireAuth);
@@ -2215,31 +2462,42 @@ app.get("/api/config", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/config", asyncHandler(async (req, res) => {
-  const updated = await saveConfigValues(req.body?.values || {});
+  const values = req.body?.values || {};
+  const updated = await withAudit({
+    action: "config.save",
+    target: "server-config",
+    detail: { keys: Object.keys(values) }
+  }, () => saveConfigValues(values));
   res.json({ ok: true, updated, restartRequired: true });
 }));
 
 app.post("/api/rcon/setup", asyncHandler(async (_req, res) => {
   const password = crypto.randomBytes(18).toString("base64url");
-  await saveConfigValues({ ENABLE_RCON: "true", RCON_PASSWORD: password });
+  await withAudit({
+    action: "rcon.setup",
+    target: "server-config"
+  }, () => saveConfigValues({ ENABLE_RCON: "true", RCON_PASSWORD: password }));
   res.json({ ok: true, password, restartRequired: true });
 }));
 
 app.post("/api/server/:action", asyncHandler(async (req, res) => {
   const action = req.params.action;
-  const { container, inspect } = await getMinecraftContainer();
-  if (!container) throw new Error("没有找到 Minecraft 容器。请先用 Docker Compose 创建服务。");
-  if (action === "start") {
-    if (!inspect.State.Running) await container.start();
-  } else if (action === "stop") {
-    if (inspect.State.Running) await container.stop({ t: 120 });
-  } else if (action === "restart") {
-    if (inspect.State.Running) await container.restart({ t: 120 });
-    else await container.start();
-  } else {
+  if (!["start", "stop", "restart"].includes(action)) {
     res.status(404).json({ error: "UNKNOWN_ACTION", message: "未知服务器操作。" });
     return;
   }
+  await withAudit({ action: `server.${action}`, target: MINECRAFT_CONTAINER }, async () => {
+    const { container, inspect } = await getMinecraftContainer();
+    if (!container) throw new Error("没有找到 Minecraft 容器。请先用 Docker Compose 创建服务。");
+    if (action === "start") {
+      if (!inspect.State.Running) await container.start();
+    } else if (action === "stop") {
+      if (inspect.State.Running) await container.stop({ t: 120 });
+    } else if (action === "restart") {
+      if (inspect.State.Running) await container.restart({ t: 120 });
+      else await container.start();
+    }
+  });
   res.json({ ok: true, action });
 }));
 
@@ -2248,12 +2506,30 @@ app.get("/api/logs", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/command", asyncHandler(async (req, res) => {
-  const response = await sendRconCommand(req.body?.command);
+  const command = String(req.body?.command || "").trim();
+  const response = await withAudit({
+    action: "rcon.command",
+    target: command.split(/\s+/)[0] || "command",
+    detail: { command: sanitizeAuditCommand(command) }
+  }, () => sendRconCommand(command));
   res.json({ ok: true, response });
 }));
 
 app.get("/api/players", asyncHandler(async (_req, res) => {
   res.json(await getOnlinePlayers());
+}));
+
+app.get("/api/players/:name/detail", asyncHandler(async (req, res) => {
+  const name = normalizeMinecraftName(req.params.name);
+  const detail = await withAudit({
+    action: "player.detail.view",
+    target: name
+  }, () => getPlayerDetail(name));
+  res.json({ detail });
+}));
+
+app.get("/api/audit-log", asyncHandler(async (req, res) => {
+  res.json({ entries: await listAuditLogs(req.query.limit) });
 }));
 
 app.get("/api/player-users", asyncHandler(async (_req, res) => {
@@ -2267,17 +2543,27 @@ app.get("/api/player-users", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/player-users/:id/approve", asyncHandler(async (req, res) => {
-  const user = await approvePlayerWhitelist(req.params.id, "admin");
+  const user = await withAudit({
+    action: "playerUser.approveWhitelist",
+    target: req.params.id
+  }, () => approvePlayerWhitelist(req.params.id, "admin"));
   res.json({ ok: true, user: publicPlayerUser(user) });
 }));
 
 app.post("/api/player-users/:id/reject", asyncHandler(async (req, res) => {
-  const user = await rejectPlayerUser(req.params.id, req.body?.note);
+  const user = await withAudit({
+    action: "playerUser.reject",
+    target: req.params.id
+  }, () => rejectPlayerUser(req.params.id, req.body?.note));
   res.json({ ok: true, user: publicPlayerUser(user) });
 }));
 
 app.delete("/api/player-users/:id", asyncHandler(async (req, res) => {
-  res.json({ ok: true, user: await deletePlayerUser(req.params.id) });
+  const user = await withAudit({
+    action: "playerUser.delete",
+    target: req.params.id
+  }, () => deletePlayerUser(req.params.id));
+  res.json({ ok: true, user });
 }));
 
 app.get("/api/chat/history", asyncHandler(async (req, res) => {
@@ -2285,7 +2571,11 @@ app.get("/api/chat/history", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/chat/send", asyncHandler(async (req, res) => {
-  res.json({ ok: true, message: await sendChatMessage(req.body?.message) });
+  const message = await withAudit({
+    action: "chat.send",
+    target: "server-chat"
+  }, () => sendChatMessage(req.body?.message));
+  res.json({ ok: true, message });
 }));
 
 app.get("/api/map", asyncHandler(async (req, res) => {
@@ -2302,37 +2592,53 @@ app.get("/api/mods", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/mods/upload", upload.array("mods", 20), asyncHandler(async (req, res) => {
-  await fsp.mkdir(MODS_DIR, { recursive: true });
-  const uploaded = [];
-  for (const file of req.files || []) {
-    const name = safeModName(file.originalname);
-    if (!name.endsWith(".jar")) {
-      await fsp.rm(file.path, { force: true });
-      throw new Error("上传文件必须是 .jar。");
+  const fileNames = (req.files || []).map((file) => file.originalname);
+  const uploaded = await withAudit({
+    action: "mods.upload",
+    target: "mods",
+    detail: { files: fileNames, overwrite: req.body?.overwrite === "true" }
+  }, async () => {
+    await fsp.mkdir(MODS_DIR, { recursive: true });
+    const names = [];
+    for (const file of req.files || []) {
+      const name = safeModName(file.originalname);
+      if (!name.endsWith(".jar")) {
+        await fsp.rm(file.path, { force: true });
+        throw new Error("上传文件必须是 .jar。");
+      }
+      const target = path.join(MODS_DIR, name);
+      if ((await pathExists(target)) && req.body?.overwrite !== "true") {
+        await fsp.rm(file.path, { force: true });
+        throw new Error(`${name} 已存在。勾选覆盖后再上传。`);
+      }
+      await moveFileAcrossDevices(file.path, target);
+      names.push(name);
     }
-    const target = path.join(MODS_DIR, name);
-    if ((await pathExists(target)) && req.body?.overwrite !== "true") {
-      await fsp.rm(file.path, { force: true });
-      throw new Error(`${name} 已存在。勾选覆盖后再上传。`);
-    }
-    await moveFileAcrossDevices(file.path, target);
-    uploaded.push(name);
-  }
+    return names;
+  });
   res.json({ ok: true, uploaded, restartRequired: true });
 }));
 
 app.post("/api/mods/:name/toggle", asyncHandler(async (req, res) => {
   const name = safeModName(req.params.name);
-  const source = path.join(MODS_DIR, name);
-  if (!(await pathExists(source))) throw new Error("mod 文件不存在。");
-  const targetName = name.endsWith(".disabled") ? name.replace(/\.disabled$/, "") : `${name}.disabled`;
-  await fsp.rename(source, path.join(MODS_DIR, safeModName(targetName)));
+  await withAudit({
+    action: "mods.toggle",
+    target: name
+  }, async () => {
+    const source = path.join(MODS_DIR, name);
+    if (!(await pathExists(source))) throw new Error("mod 文件不存在。");
+    const targetName = name.endsWith(".disabled") ? name.replace(/\.disabled$/, "") : `${name}.disabled`;
+    await fsp.rename(source, path.join(MODS_DIR, safeModName(targetName)));
+  });
   res.json({ ok: true, restartRequired: true });
 }));
 
 app.delete("/api/mods/:name", asyncHandler(async (req, res) => {
   const name = safeModName(req.params.name);
-  await fsp.rm(path.join(MODS_DIR, name), { force: true });
+  await withAudit({
+    action: "mods.delete",
+    target: name
+  }, () => fsp.rm(path.join(MODS_DIR, name), { force: true }));
   res.json({ ok: true, restartRequired: true });
 }));
 
@@ -2355,7 +2661,12 @@ app.get("/api/backups", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/backups", asyncHandler(async (req, res) => {
-  const backup = await createBackupPackage(req.body?.type || "world");
+  const type = req.body?.type || "world";
+  const backup = await withAudit({
+    action: "backup.create",
+    target: type,
+    detail: { uploadRemote: Boolean(req.body?.uploadRemote) }
+  }, () => createBackupPackage(type));
   let remote = null;
   let remoteError = "";
   if (req.body?.uploadRemote || (remoteBackupConfig.enabled && remoteBackupConfig.autoUpload)) {
@@ -2373,7 +2684,12 @@ app.get("/api/backups/remote/config", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/backups/remote/config", asyncHandler(async (req, res) => {
-  res.json({ ok: true, config: await saveRemoteBackupConfig(req.body || {}) });
+  const config = await withAudit({
+    action: "backup.remoteConfig.save",
+    target: "remote-backup",
+    detail: req.body || {}
+  }, () => saveRemoteBackupConfig(req.body || {}));
+  res.json({ ok: true, config });
 }));
 
 app.post("/api/backups/remote/test", asyncHandler(async (_req, res) => {
@@ -2385,25 +2701,47 @@ app.get("/api/backups/schedule", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/backups/schedule", asyncHandler(async (req, res) => {
-  res.json({ ok: true, config: await saveScheduledBackupConfig(req.body || {}) });
+  const config = await withAudit({
+    action: "backup.schedule.save",
+    target: "scheduled-backup",
+    detail: req.body || {}
+  }, () => saveScheduledBackupConfig(req.body || {}));
+  res.json({ ok: true, config });
 }));
 
 app.post("/api/backups/remote/import", asyncHandler(async (req, res) => {
-  res.json({ ok: true, backup: await importRemoteBackup(req.body?.key, { overwrite: Boolean(req.body?.overwrite) }) });
+  const backup = await withAudit({
+    action: "backup.remoteImport",
+    target: req.body?.key || "",
+    detail: { overwrite: Boolean(req.body?.overwrite) }
+  }, () => importRemoteBackup(req.body?.key, { overwrite: Boolean(req.body?.overwrite) }));
+  res.json({ ok: true, backup });
 }));
 
 app.delete("/api/backups/remote", asyncHandler(async (req, res) => {
-  res.json({ ok: true, remote: await deleteRemoteBackup(req.body?.key) });
+  const remote = await withAudit({
+    action: "backup.remoteDelete",
+    target: req.body?.key || ""
+  }, () => deleteRemoteBackup(req.body?.key));
+  res.json({ ok: true, remote });
 }));
 
 app.post("/api/backups/:name/remote-upload", asyncHandler(async (req, res) => {
   const name = safeFileName(req.params.name);
-  res.json({ ok: true, remote: await uploadBackupToRemote(name) });
+  const remote = await withAudit({
+    action: "backup.remoteUpload",
+    target: name
+  }, () => uploadBackupToRemote(name));
+  res.json({ ok: true, remote });
 }));
 
 app.post("/api/backups/:name/restore", asyncHandler(async (req, res) => {
   const name = safeFileName(req.params.name);
-  res.json({ ok: true, restore: await restoreBackupPackage(name, req.body || {}) });
+  const restore = await withAudit({
+    action: "backup.restore",
+    target: name
+  }, () => restoreBackupPackage(name, req.body || {}));
+  res.json({ ok: true, restore });
 }));
 
 app.get("/api/backups/:name/download", asyncHandler(async (req, res) => {
@@ -2416,11 +2754,16 @@ app.get("/api/backups/:name/download", asyncHandler(async (req, res) => {
 
 app.delete("/api/backups/:name", asyncHandler(async (req, res) => {
   const name = safeFileName(req.params.name);
-  if (!name.endsWith(".tar.gz")) throw new Error("备份文件名不合法。");
-  const filePath = path.join(BACKUP_DIR, name);
-  if (!(await pathExists(filePath))) throw createPublicError(404, "BACKUP_NOT_FOUND", "备份文件不存在。");
-  await fsp.rm(filePath, { force: true });
-  await fsp.rm(getBackupSidecarPath(filePath), { force: true });
+  await withAudit({
+    action: "backup.delete",
+    target: name
+  }, async () => {
+    if (!name.endsWith(".tar.gz")) throw new Error("备份文件名不合法。");
+    const filePath = path.join(BACKUP_DIR, name);
+    if (!(await pathExists(filePath))) throw createPublicError(404, "BACKUP_NOT_FOUND", "备份文件不存在。");
+    await fsp.rm(filePath, { force: true });
+    await fsp.rm(getBackupSidecarPath(filePath), { force: true });
+  });
   res.json({ ok: true });
 }));
 

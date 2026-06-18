@@ -563,6 +563,104 @@ main {
   min-height: 130px;
 }
 
+.player-detail-actions {
+  flex: 1 1 420px;
+  justify-content: flex-end;
+}
+
+.player-detail-actions input {
+  max-width: 240px;
+}
+
+.player-detail-view {
+  display: grid;
+  gap: 14px;
+}
+
+.player-detail-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.player-detail-summary article {
+  display: grid;
+  gap: 4px;
+  min-height: 70px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff7fa;
+  padding: 12px;
+}
+
+.player-detail-summary span,
+.inventory-section h3 {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.player-detail-summary strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.inventory-section {
+  display: grid;
+  gap: 10px;
+}
+
+.inventory-section h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.inventory-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 10px;
+}
+
+.inventory-item summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  cursor: pointer;
+}
+
+.inventory-item summary span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.inventory-item summary em {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.inventory-item code,
+.audit-detail code {
+  display: block;
+  overflow-x: auto;
+  margin-top: 8px;
+  border-radius: 6px;
+  background: #2a1622;
+  color: #ffe4ef;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 .player-list {
   display: flex;
   flex-wrap: wrap;
@@ -646,6 +744,16 @@ main {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.audit-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.audit-detail {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .backup-actions {

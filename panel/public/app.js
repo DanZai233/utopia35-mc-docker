@@ -11,6 +11,8 @@ const state = {
   authenticated: false,
   needsRestart: false,
   lastPlayers: [],
+  lastPlayerDetail: null,
+  auditEntries: [],
   remoteBackupConfig: null,
   scheduledBackupConfig: null,
   whitelistEnabled: false,
@@ -161,6 +163,7 @@ function activateTab(tabName) {
     loadMapStatus().catch(showOperationError);
   }
   if (tabName === "player-center") loadPlayerUsers().catch(showOperationError);
+  if (tabName === "audit") loadAuditLog().catch(showOperationError);
   window.scrollTo({ top: 0, behavior: "auto" });
 }
 
@@ -171,6 +174,7 @@ async function refreshAll() {
     ["聊天", () => loadChatHistory({ silent: true })],
     ["在线玩家", () => loadPlayers({ silent: true })],
     ["玩家中心", () => loadPlayerUsers({ silent: true })],
+    ["审计", () => loadAuditLog({ silent: true })],
     ["配置", loadConfig],
     ["Mod 列表", loadMods],
     ["备份列表", loadBackups]
@@ -573,7 +577,105 @@ function fillPlayerInputs(player) {
   $$("input[name='player']").forEach((input) => {
     input.value = player;
   });
+  const detailName = $("#player-detail-name");
+  if (detailName) detailName.value = player;
   showToast(`已填入玩家：${player}`);
+}
+
+function formatCoordValue(value) {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(1) : "-";
+}
+
+function shortItemId(id) {
+  return String(id || "").replace(/^minecraft:/, "");
+}
+
+function renderItemList(items = [], emptyText = "没有物品") {
+  if (!items.length) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  return `
+    <div class="inventory-grid">
+      ${items.map((item) => `
+        <details class="inventory-item">
+          <summary>
+            <span>${escapeHtml(shortItemId(item.id))}</span>
+            <strong>x${escapeHtml(item.count || 0)}</strong>
+            <em>Slot ${escapeHtml(item.slot ?? "-")}</em>
+          </summary>
+          <code>${escapeHtml(item.raw || item.id)}</code>
+        </details>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderPlayerDetail(detail, error = "") {
+  const container = $("#player-detail-view");
+  if (!container) return;
+  if (error) {
+    container.innerHTML = `<div class="empty-state">${escapeHtml(error)}</div>`;
+    return;
+  }
+  if (!detail) {
+    container.innerHTML = `<div class="empty-state">点击在线玩家，或输入玩家名查看坐标、生命、经验、背包和末影箱。</div>`;
+    return;
+  }
+  const location = detail.location || {};
+  const selectedText = detail.selectedItem
+    ? `${escapeHtml(shortItemId(detail.selectedItem.id))} x${escapeHtml(detail.selectedItem.count)}`
+    : detail.selectedSlot === null || detail.selectedSlot === undefined ? "-" : `空栏位 ${escapeHtml(detail.selectedSlot)}`;
+  container.innerHTML = `
+    <div class="player-detail-summary">
+      <article>
+        <span>玩家</span>
+        <strong>${escapeHtml(detail.name)}</strong>
+      </article>
+      <article>
+        <span>维度</span>
+        <strong>${escapeHtml(location.dimension || "-")}</strong>
+      </article>
+      <article>
+        <span>坐标</span>
+        <strong>${formatCoordValue(location.x)}, ${formatCoordValue(location.y)}, ${formatCoordValue(location.z)}</strong>
+      </article>
+      <article>
+        <span>生命 / 饥饿 / 经验</span>
+        <strong>${formatCoordValue(detail.health)} / ${formatCoordValue(detail.foodLevel)} / ${escapeHtml(detail.xpLevel ?? "-")}</strong>
+      </article>
+      <article>
+        <span>手持物</span>
+        <strong>${selectedText}</strong>
+      </article>
+      <article>
+        <span>物品数量</span>
+        <strong>${(detail.inventory || []).length} / 末影箱 ${(detail.enderItems || []).length}</strong>
+      </article>
+    </div>
+    <section class="inventory-section">
+      <h3>背包</h3>
+      ${renderItemList(detail.inventory || [], "背包为空，或服务端没有返回可解析物品。")}
+    </section>
+    <section class="inventory-section">
+      <h3>末影箱</h3>
+      ${renderItemList(detail.enderItems || [], "末影箱为空，或服务端没有返回可解析物品。")}
+    </section>
+  `;
+}
+
+async function loadPlayerDetail(nameInput) {
+  const name = String(nameInput || $("#player-detail-name")?.value || "").trim();
+  if (!name) {
+    showToast("请输入玩家名。");
+    return;
+  }
+  const button = $("#load-player-detail-button");
+  await withButtonBusy(button, "读取中", async () => {
+    renderPlayerDetail(null, "正在读取玩家详情...");
+    const result = await api(`/api/players/${encodeURIComponent(name)}/detail`);
+    state.lastPlayerDetail = result.detail;
+    $("#player-detail-name").value = result.detail.name;
+    renderPlayerDetail(result.detail);
+    showToast("玩家详情已更新。");
+  });
 }
 
 function playerStatusLabel(status, whitelistEnabled = state.whitelistEnabled) {
@@ -583,6 +685,84 @@ function playerStatusLabel(status, whitelistEnabled = state.whitelistEnabled) {
   if (status === "rejected") return "已拒绝";
   if (status === "disabled") return "已禁用";
   return "可使用";
+}
+
+function auditActionLabel(action) {
+  const labels = {
+    "backup.create": "创建备份",
+    "backup.delete": "删除备份",
+    "backup.remoteConfig.save": "保存远端配置",
+    "backup.remoteDelete": "删除远端备份",
+    "backup.remoteImport": "拉回远端备份",
+    "backup.remoteUpload": "上传远端备份",
+    "backup.restore": "恢复备份",
+    "backup.schedule.save": "保存定时备份",
+    "chat.send": "面板聊天",
+    "config.save": "保存配置",
+    "mods.delete": "删除 Mod",
+    "mods.toggle": "切换 Mod",
+    "mods.upload": "上传 Mod",
+    "player.chat.send": "玩家聊天",
+    "player.dailyKit": "领取每日礼包",
+    "player.detail.view": "查看玩家详情",
+    "player.requestWhitelist": "申请白名单",
+    "player.rescue": "卡住自救",
+    "player.setHome": "设置 Home",
+    "player.teleportHome": "回 Home",
+    "player.teleportSpawn": "回出生点",
+    "playerUser.approveWhitelist": "批准白名单",
+    "playerUser.delete": "删除玩家账号",
+    "playerUser.reject": "拒绝玩家账号",
+    "rcon.command": "执行 RCON",
+    "rcon.setup": "生成 RCON",
+    "server.restart": "重启服务器",
+    "server.start": "启动服务器",
+    "server.stop": "停止服务器"
+  };
+  return labels[action] || action || "未知操作";
+}
+
+function renderAuditLog(entries = [], error = "") {
+  const list = $("#audit-log-list");
+  if (!list) return;
+  if (error) {
+    list.innerHTML = `<div class="table-row"><div><div class="table-title">审计日志读取失败</div><div class="table-meta">${escapeHtml(error)}</div></div></div>`;
+    return;
+  }
+  if (!entries.length) {
+    list.innerHTML = `<div class="table-row"><div><div class="table-title">还没有审计记录</div><div class="table-meta">执行一次后台命令或玩家自助操作后会出现在这里。</div></div></div>`;
+    return;
+  }
+  list.innerHTML = entries.map((entry) => {
+    const detail = entry.detail && Object.keys(entry.detail).length ? JSON.stringify(entry.detail) : "";
+    return `
+      <div class="table-row audit-row">
+        <div>
+          <div class="table-title">
+            <span class="backup-type ${entry.ok ? "approved" : "disabled"}">${entry.ok ? "成功" : "失败"}</span>
+            ${escapeHtml(auditActionLabel(entry.action))}
+          </div>
+          <div class="table-meta">
+            ${formatDate(entry.time)} · ${escapeHtml(entry.actorType === "player" ? "玩家" : "后台")}：${escapeHtml(entry.actor || "-")} · 目标：${escapeHtml(entry.target || "-")}
+          </div>
+          ${entry.error ? `<div class="table-meta error-text">${escapeHtml(entry.error)}</div>` : ""}
+          ${detail ? `<details class="audit-detail"><summary>详情</summary><code>${escapeHtml(detail)}</code></details>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function loadAuditLog(options = {}) {
+  try {
+    const data = await api("/api/audit-log?limit=160");
+    state.auditEntries = data.entries || [];
+    renderAuditLog(state.auditEntries);
+  } catch (error) {
+    renderAuditLog([], error.message);
+    if (options.silent) return;
+    throw error;
+  }
 }
 
 async function loadPlayerUsers(options = {}) {
@@ -629,6 +809,7 @@ function renderPlayerUsers(users, error = "") {
         ${user.note ? `<div class="table-meta">备注：${escapeHtml(user.note)}</div>` : ""}
       </div>
       <div class="table-actions">
+        ${user.minecraftName ? `<button class="secondary" data-player-detail="${escapeHtml(user.minecraftName)}">详情</button>` : ""}
         ${whitelistActions(user)}
         <button class="danger" data-player-user-delete="${escapeHtml(user.id)}">删除</button>
       </div>
@@ -1077,8 +1258,16 @@ function bindEvents() {
   $("#install-bluemap-button").addEventListener("click", () => installBlueMap().catch(showOperationError));
   $("#refresh-player-users-button").addEventListener("click", () => loadPlayerUsers().catch(showOperationError));
   $("#refresh-players-button").addEventListener("click", () => loadPlayers().catch(showOperationError));
+  $("#load-player-detail-button").addEventListener("click", () => loadPlayerDetail().catch(showOperationError));
+  $("#player-detail-name").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      loadPlayerDetail().catch(showOperationError);
+    }
+  });
   $("#refresh-mods-button").addEventListener("click", () => loadMods().catch(showOperationError));
   $("#refresh-backups-button").addEventListener("click", () => loadBackups().catch(showOperationError));
+  $("#refresh-audit-button").addEventListener("click", () => loadAuditLog().catch(showOperationError));
   $("#restart-from-notice-button").addEventListener("click", () => runServerAction("restart").catch(showOperationError));
   $("#clear-logs-button").addEventListener("click", () => {
     $("#log-output").textContent = "";
@@ -1123,13 +1312,21 @@ function bindEvents() {
     const chip = event.target.closest("[data-player-name]");
     if (!chip) return;
     fillPlayerInputs(chip.dataset.playerName);
+    loadPlayerDetail(chip.dataset.playerName).catch(showOperationError);
   });
 
   $("#player-users-list").addEventListener("click", async (event) => {
     const approve = event.target.closest("[data-player-user-approve]");
     const reject = event.target.closest("[data-player-user-reject]");
     const del = event.target.closest("[data-player-user-delete]");
+    const detail = event.target.closest("[data-player-detail]");
     try {
+      if (detail) {
+        activateTab("players");
+        fillPlayerInputs(detail.dataset.playerDetail);
+        await loadPlayerDetail(detail.dataset.playerDetail);
+        return;
+      }
       if (approve) {
         await withButtonBusy(approve, "批准中", async () => {
           await api(`/api/player-users/${encodeURIComponent(approve.dataset.playerUserApprove)}/approve`, { method: "POST" });

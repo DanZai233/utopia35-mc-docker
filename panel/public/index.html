@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Utopia 3.5 控制面板</title>
-    <link rel="stylesheet" href="/styles.css?v=20260618-player-center">
+    <link rel="stylesheet" href="/styles.css?v=20260618-audit-detail">
   </head>
   <body>
     <section id="login-view" class="login-shell" hidden>
@@ -48,6 +48,7 @@
         <button data-tab="players">玩家</button>
         <button data-tab="mods">Mods</button>
         <button data-tab="backups">备份</button>
+        <button data-tab="audit">审计</button>
       </nav>
 
       <section id="app-message" class="notice app-message" hidden></section>
@@ -229,6 +230,18 @@
             </div>
             <pre id="player-command-response" class="command-response player-command-response">还没有执行玩家命令。</pre>
           </section>
+          <section class="panel player-detail-panel">
+            <div class="section-head">
+              <h2>玩家详情</h2>
+              <div class="button-row player-detail-actions">
+                <input id="player-detail-name" type="text" placeholder="输入在线玩家名" maxlength="16">
+                <button id="load-player-detail-button" type="button" class="secondary">查看详情</button>
+              </div>
+            </div>
+            <div id="player-detail-view" class="player-detail-view">
+              <div class="empty-state">点击在线玩家，或输入玩家名查看坐标、生命、经验、背包和末影箱。</div>
+            </div>
+          </section>
         </section>
 
         <section id="tab-mods" class="tab-panel">
@@ -375,10 +388,22 @@
             <div id="remote-backups-list" class="table-list"></div>
           </section>
         </section>
+
+        <section id="tab-audit" class="tab-panel">
+          <div class="section-head">
+            <h2>操作审计</h2>
+            <button id="refresh-audit-button" type="button" class="secondary">刷新审计</button>
+          </div>
+          <section class="notice">
+            <strong>关键操作会记录在这里。</strong>
+            <span>包括后台命令、配置、Mod、备份、玩家审批，以及玩家中心的自助传送、礼包和聊天。</span>
+          </section>
+          <div id="audit-log-list" class="table-list"></div>
+        </section>
       </main>
     </section>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/app.js?v=20260618-player-center"></script>
+    <script src="/app.js?v=20260618-audit-detail"></script>
   </body>
 </html>
