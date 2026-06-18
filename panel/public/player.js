@@ -3,6 +3,7 @@
 const playerState = {
   authenticated: false,
   user: null,
+  server: { whitelistEnabled: false },
   chatSocket: null,
   chatMessages: []
 };
@@ -54,11 +55,13 @@ async function api(path, options = {}) {
   return data;
 }
 
-function playerStatusLabel(status) {
+function playerStatusLabel(status, whitelistEnabled = playerState.server.whitelistEnabled) {
+  if (!whitelistEnabled && status !== "disabled") return "可使用";
   if (status === "approved") return "已加入白名单";
+  if (status === "pending") return "待处理";
   if (status === "rejected") return "申请被拒绝";
   if (status === "disabled") return "账号已禁用";
-  return "待处理";
+  return "可使用";
 }
 
 function setAuthenticated(authenticated, user = null) {
@@ -83,23 +86,49 @@ function setAuthenticated(authenticated, user = null) {
 
 function renderUser(user) {
   playerState.user = user;
-  const status = user?.status || "pending";
-  $("#player-account-state").className = `state-pill ${status === "approved" ? "running" : "stopped"}`;
+  const status = user?.status || "active";
+  const blocked = status === "disabled" || (playerState.server.whitelistEnabled && status === "rejected");
+  $("#player-account-state").className = `state-pill ${blocked ? "stopped" : "running"}`;
   $("#player-account-state").textContent = playerStatusLabel(status);
   $("#player-metric-username").textContent = user?.username || "-";
   $("#player-metric-minecraft").textContent = user?.minecraftName || "未绑定";
   $("#player-metric-status").textContent = playerStatusLabel(status);
   $("#player-profile-minecraft").value = user?.minecraftName || "";
+  $("#player-request-whitelist-button").hidden = !playerState.server.whitelistEnabled;
+  renderActionState(user);
   const message = $("#player-profile-message");
   if (user?.note) {
     message.textContent = `备注：${user.note}`;
     message.classList.toggle("error", status === "rejected");
-  } else if (status === "approved") {
+  } else if (playerState.server.whitelistEnabled && status === "approved") {
     message.textContent = `已在 ${formatDate(user.whitelistApprovedAt)} 加入白名单。`;
     message.classList.remove("error");
-  } else {
-    message.textContent = "绑定 Minecraft 名称后，可以申请加入服务器白名单。";
+  } else if (playerState.server.whitelistEnabled) {
+    message.textContent = "服务器开启了白名单，绑定 Minecraft 名称后可以申请加入。";
     message.classList.remove("error");
+  } else {
+    message.textContent = "绑定 Minecraft 名称后，就可以使用玩家中心的自助操作。";
+    message.classList.remove("error");
+  }
+}
+
+function renderServer(server = {}) {
+  playerState.server = {
+    whitelistEnabled: Boolean(server.whitelistEnabled)
+  };
+  $("#player-request-whitelist-button").hidden = !playerState.server.whitelistEnabled;
+}
+
+function renderActionState(user) {
+  const kitState = $("#player-daily-kit-state");
+  if (!kitState || !user) return;
+  kitState.className = `state-pill ${user.dailyKitAvailable ? "running" : "stopped"}`;
+  kitState.textContent = user.dailyKitAvailable ? "礼包可领取" : `下次 ${formatDate(user.nextDailyKitAt)}`;
+  const actionMessage = $("#player-action-message");
+  if (user.home) {
+    actionMessage.textContent = `Home：${user.home.dimension} ${Math.round(user.home.x)}, ${Math.round(user.home.y)}, ${Math.round(user.home.z)}`;
+  } else {
+    actionMessage.textContent = "设置 home 后，可以从网页一键传送回去。";
   }
 }
 
@@ -118,7 +147,10 @@ async function refreshPlayerHome() {
     api("/api/player/players"),
     api("/api/player/chat/history")
   ]);
-  if (session.status === "fulfilled") renderUser(session.value.user);
+  if (session.status === "fulfilled") {
+    renderServer(session.value.server);
+    renderUser(session.value.user);
+  }
   if (players.status === "fulfilled") renderOnlinePlayers(players.value);
   else renderOnlinePlayers({ players: [], online: null, max: null, raw: players.reason.message });
   if (history.status === "fulfilled") {
@@ -129,6 +161,7 @@ async function refreshPlayerHome() {
 
 async function checkSession() {
   const session = await api("/api/player/session");
+  renderServer(session.server);
   setAuthenticated(session.authenticated, session.user);
 }
 
@@ -192,6 +225,15 @@ async function requestWhitelist() {
     const result = await api("/api/player/whitelist/request", { method: "POST" });
     renderUser(result.user);
     showToast(result.autoApproved ? "已自动加入白名单。" : "申请已提交，等待管理员处理。");
+  });
+}
+
+async function runPlayerAction(path, button, busyLabel, successMessage) {
+  await withButtonBusy(button, busyLabel, async () => {
+    const result = await api(path, { method: "POST" });
+    if (result.user) renderUser(result.user);
+    showToast(successMessage);
+    await refreshPlayerHome();
   });
 }
 
@@ -307,6 +349,11 @@ function bindEvents() {
   $("#player-request-whitelist-button").addEventListener("click", () => requestWhitelist().catch(showError));
   $("#player-refresh-button").addEventListener("click", () => refreshPlayerHome().catch(showError));
   $("#player-refresh-online-button").addEventListener("click", () => api("/api/player/players").then(renderOnlinePlayers).catch(showError));
+  $("#player-set-home-button").addEventListener("click", () => runPlayerAction("/api/player/actions/set-home", $("#player-set-home-button"), "设置中", "Home 已设置。").catch(showError));
+  $("#player-home-button").addEventListener("click", () => runPlayerAction("/api/player/actions/home", $("#player-home-button"), "传送中", "已传送到 home。").catch(showError));
+  $("#player-spawn-button").addEventListener("click", () => runPlayerAction("/api/player/actions/spawn", $("#player-spawn-button"), "传送中", "已传送到出生点附近。").catch(showError));
+  $("#player-rescue-button").addEventListener("click", () => runPlayerAction("/api/player/actions/rescue", $("#player-rescue-button"), "自救中", "已尝试把你向上移动并附加保护效果。").catch(showError));
+  $("#player-daily-kit-button").addEventListener("click", () => runPlayerAction("/api/player/actions/daily-kit", $("#player-daily-kit-button"), "领取中", "每日礼包已发放。").catch(showError));
   $("#player-connect-chat-button").addEventListener("click", connectChat);
   $("#player-clear-chat-button").addEventListener("click", () => {
     playerState.chatMessages = [];

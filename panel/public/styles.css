@@ -755,6 +755,14 @@ main {
   margin-top: 8px;
 }
 
+.player-self-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.player-self-actions button {
+  min-height: 44px;
+}
+
 .player-chip.readonly {
   cursor: default;
   display: inline-flex;

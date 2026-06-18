@@ -48,6 +48,7 @@ const BLUEMAP_GAME_VERSION = process.env.BLUEMAP_GAME_VERSION || "1.20.1";
 const BLUEMAP_MODRINTH_API = "https://api.modrinth.com/v2/project/bluemap/version";
 const BLUEMAP_PROJECT_URL = "https://modrinth.com/plugin/bluemap";
 const PLAYER_AUTO_WHITELIST = envBool(process.env.PLAYER_AUTO_WHITELIST, false);
+let scheduledBackupConfig = readScheduledBackupConfigFromEnv(process.env);
 let remoteBackupConfig = readRemoteBackupConfigFromEnv(process.env);
 
 const docker = new Docker({ socketPath: DOCKER_SOCKET });
@@ -65,6 +66,18 @@ const PLAYER_SESSION_COOKIE = "utopia35_player";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PLAYER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CHAT_HISTORY_LIMIT = 200;
+const PLAYER_ACTION_COOLDOWN_MS = Number(process.env.PLAYER_ACTION_COOLDOWN_SECONDS || 60) * 1000;
+const PLAYER_DAILY_KIT_COOLDOWN_MS = Number(process.env.PLAYER_DAILY_KIT_HOURS || 24) * 60 * 60 * 1000;
+const PLAYER_DAILY_KIT_COMMANDS = (process.env.PLAYER_DAILY_KIT_COMMANDS || "give {player} minecraft:bread 16;give {player} minecraft:torch 16")
+  .split(";")
+  .map((command) => command.trim())
+  .filter(Boolean);
+const PLAYER_SPAWN_LOCATION = {
+  dimension: normalizeMinecraftDimension(process.env.PLAYER_SPAWN_DIMENSION || "minecraft:overworld"),
+  x: readCoordinate(process.env.PLAYER_SPAWN_X, 0),
+  y: readCoordinate(process.env.PLAYER_SPAWN_Y, 80),
+  z: readCoordinate(process.env.PLAYER_SPAWN_Z, 0)
+};
 const chatHistory = [];
 const playerChatRate = new Map();
 const scryptAsync = promisify(crypto.scrypt);
@@ -255,6 +268,7 @@ async function loadPanelPasswordFromEnv() {
   const values = await readEnvFile(COMPOSE_ENV_FILE);
   if (values.PANEL_PASSWORD) panelPassword = values.PANEL_PASSWORD;
   remoteBackupConfig = readRemoteBackupConfigFromEnv({ ...process.env, ...values });
+  scheduledBackupConfig = readScheduledBackupConfigFromEnv({ ...process.env, ...values });
 }
 
 function encodeEnvValue(value) {
@@ -436,11 +450,14 @@ async function updatePlayerStore(mutator) {
 
 function publicPlayerUser(user) {
   if (!user) return null;
+  const now = Date.now();
+  const lastDailyKitAt = user.lastDailyKitAt || "";
+  const nextDailyKitAt = lastDailyKitAt ? new Date(new Date(lastDailyKitAt).getTime() + PLAYER_DAILY_KIT_COOLDOWN_MS).toISOString() : "";
   return {
     id: user.id,
     username: user.username,
     minecraftName: user.minecraftName || "",
-    status: user.status || "pending",
+    status: user.status || "active",
     role: user.role || "player",
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -448,6 +465,10 @@ function publicPlayerUser(user) {
     whitelistRequestedAt: user.whitelistRequestedAt || "",
     whitelistApprovedAt: user.whitelistApprovedAt || "",
     approvedBy: user.approvedBy || "",
+    home: user.home || null,
+    lastDailyKitAt,
+    nextDailyKitAt,
+    dailyKitAvailable: !lastDailyKitAt || new Date(lastDailyKitAt).getTime() + PLAYER_DAILY_KIT_COOLDOWN_MS <= now,
     note: user.note || ""
   };
 }
@@ -503,13 +524,16 @@ async function registerPlayerUser(payload = {}) {
       minecraftName,
       passwordHash,
       role: "player",
-      status: "pending",
+      status: "active",
       createdAt: now,
       updatedAt: now,
       lastLoginAt: "",
       whitelistRequestedAt: "",
       whitelistApprovedAt: "",
       approvedBy: "",
+      home: null,
+      lastActionAt: "",
+      lastDailyKitAt: "",
       note: ""
     };
     store.users.push(user);
@@ -552,7 +576,7 @@ async function updatePlayerMinecraftName(userId, minecraftNameInput) {
     if (!user) throw createPublicError(404, "PLAYER_NOT_FOUND", "玩家账号不存在。");
     user.minecraftName = minecraftName;
     user.updatedAt = now;
-    if (!user.status || user.status === "unbound") user.status = "pending";
+    if (!user.status || user.status === "unbound" || user.status === "pending") user.status = "active";
     return user;
   });
 }
@@ -624,6 +648,146 @@ async function deletePlayerUser(userId) {
   return { id: userId };
 }
 
+function requireBoundPlayer(user) {
+  if (!user?.minecraftName) {
+    throw createPublicError(400, "PLAYER_NOT_BOUND", "请先绑定 Minecraft 名称。");
+  }
+  return user.minecraftName;
+}
+
+function assertPlayerActionCooldown(user) {
+  const lastActionAt = user.lastActionAt ? new Date(user.lastActionAt).getTime() : 0;
+  const remaining = PLAYER_ACTION_COOLDOWN_MS - (Date.now() - lastActionAt);
+  if (remaining > 0) {
+    throw createPublicError(429, "PLAYER_ACTION_COOLDOWN", `操作冷却中，请 ${Math.ceil(remaining / 1000)} 秒后再试。`);
+  }
+}
+
+async function markPlayerAction(userId) {
+  const now = new Date().toISOString();
+  await updatePlayerStore((store) => {
+    const user = store.users.find((item) => item.id === userId);
+    if (user) user.lastActionAt = now;
+  });
+}
+
+function parseDataGetVector(response) {
+  const match = String(response || "").match(/\[([^\]]+)\]/);
+  if (!match) return null;
+  const values = match[1]
+    .split(",")
+    .map((part) => Number(String(part).replace(/[dfl]/gi, "").trim()));
+  if (values.length < 3 || values.some((value) => !Number.isFinite(value))) return null;
+  return { x: values[0], y: values[1], z: values[2] };
+}
+
+function parseDataGetString(response) {
+  const match = String(response || "").match(/has the following entity data:\s*"([^"]+)"/i);
+  return match?.[1] || "";
+}
+
+function formatCoord(value) {
+  return Number(value).toFixed(2).replace(/\.?0+$/, "");
+}
+
+function readCoordinate(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizeMinecraftDimension(value) {
+  const dimension = String(value || "").trim().toLowerCase();
+  if (dimension === "overworld" || dimension === "nether" || dimension === "end") {
+    return `minecraft:${dimension === "nether" ? "the_nether" : dimension === "end" ? "the_end" : "overworld"}`;
+  }
+  if (/^[a-z0-9_.-]+:[a-z0-9_./-]+$/.test(dimension)) return dimension;
+  return "minecraft:overworld";
+}
+
+async function getPlayerLocation(playerName) {
+  const [posResponse, dimensionResponse] = await Promise.all([
+    sendCheckedRconCommand(`data get entity ${playerName} Pos`, "读取玩家坐标失败。"),
+    sendCheckedRconCommand(`data get entity ${playerName} Dimension`, "读取玩家维度失败。")
+  ]);
+  const pos = parseDataGetVector(posResponse);
+  const dimension = parseDataGetString(dimensionResponse);
+  if (!pos || !dimension) {
+    throw createPublicError(400, "PLAYER_LOCATION_UNAVAILABLE", "读取玩家位置失败，请确认玩家当前在线。");
+  }
+  return { ...pos, dimension };
+}
+
+async function setPlayerHome(userId) {
+  const user = await findPlayerUserById(userId);
+  const playerName = requireBoundPlayer(user);
+  assertPlayerActionCooldown(user);
+  const home = await getPlayerLocation(playerName);
+  const now = new Date().toISOString();
+  const updated = await updatePlayerStore((store) => {
+    const item = store.users.find((entry) => entry.id === userId);
+    if (!item) throw createPublicError(404, "PLAYER_NOT_FOUND", "玩家账号不存在。");
+    item.home = home;
+    item.lastActionAt = now;
+    item.updatedAt = now;
+    return item;
+  });
+  return updated;
+}
+
+async function teleportPlayerToLocation(user, location, label) {
+  const playerName = requireBoundPlayer(user);
+  assertPlayerActionCooldown(user);
+  await sendCheckedRconCommand(`execute in ${location.dimension} run tp ${playerName} ${formatCoord(location.x)} ${formatCoord(location.y)} ${formatCoord(location.z)}`, "传送失败，请确认玩家在线。");
+  await markPlayerAction(user.id);
+  return { label, location };
+}
+
+async function teleportPlayerHome(userId) {
+  const user = await findPlayerUserById(userId);
+  if (!user?.home) {
+    throw createPublicError(400, "PLAYER_HOME_NOT_SET", "你还没有设置 home。");
+  }
+  return teleportPlayerToLocation(user, user.home, "home");
+}
+
+async function teleportPlayerSpawn(userId) {
+  const user = await findPlayerUserById(userId);
+  return teleportPlayerToLocation(user, PLAYER_SPAWN_LOCATION, "spawn");
+}
+
+async function rescuePlayer(userId) {
+  const user = await findPlayerUserById(userId);
+  const playerName = requireBoundPlayer(user);
+  assertPlayerActionCooldown(user);
+  await sendCheckedRconCommand(`effect give ${playerName} minecraft:resistance 10 4 true`, "自救失败，请确认玩家在线。");
+  await sendCheckedRconCommand(`effect give ${playerName} minecraft:slow_falling 20 0 true`, "自救失败，请确认玩家在线。");
+  await sendCheckedRconCommand(`tp ${playerName} ~ 120 ~`, "自救失败，请确认玩家在线。");
+  await markPlayerAction(user.id);
+  return { label: "rescue" };
+}
+
+async function claimDailyKit(userId) {
+  const user = await findPlayerUserById(userId);
+  const playerName = requireBoundPlayer(user);
+  const lastDailyKitAt = user.lastDailyKitAt ? new Date(user.lastDailyKitAt).getTime() : 0;
+  const remaining = PLAYER_DAILY_KIT_COOLDOWN_MS - (Date.now() - lastDailyKitAt);
+  if (remaining > 0) {
+    throw createPublicError(429, "PLAYER_DAILY_KIT_COOLDOWN", `每日礼包还没刷新，请 ${Math.ceil(remaining / 60 / 60 / 1000)} 小时后再试。`);
+  }
+  for (const command of PLAYER_DAILY_KIT_COMMANDS) {
+    await sendCheckedRconCommand(command.replaceAll("{player}", playerName), "礼包发放失败，请确认玩家在线。");
+  }
+  const now = new Date().toISOString();
+  const updated = await updatePlayerStore((store) => {
+    const item = store.users.find((entry) => entry.id === userId);
+    if (!item) throw createPublicError(404, "PLAYER_NOT_FOUND", "玩家账号不存在。");
+    item.lastDailyKitAt = now;
+    item.updatedAt = now;
+    return item;
+  });
+  return updated;
+}
+
 function envBool(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   return ["true", "1", "yes", "on"].includes(String(value).toLowerCase());
@@ -661,6 +825,79 @@ function readRemoteBackupConfigFromEnv(source) {
   };
   config.configured = Boolean(config.bucket && config.accessKeyId && config.secretAccessKey);
   return config;
+}
+
+function normalizeTimeOfDay(value, fallback = "04:30") {
+  const time = String(value || "").trim() || fallback;
+  if (!/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(time)) {
+    throw createPublicError(400, "BAD_BACKUP_TIME", "定时备份时间格式必须是 HH:MM。");
+  }
+  return time;
+}
+
+function normalizeWeekday(value, fallback = 0) {
+  const day = Number(value);
+  if (!Number.isInteger(day) || day < 0 || day > 6) return fallback;
+  return day;
+}
+
+function normalizeRetention(value, fallback = 7) {
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 1 || count > 200) return fallback;
+  return count;
+}
+
+function readScheduledBackupConfigFromEnv(source) {
+  return {
+    enabled: envBool(source.SCHEDULED_BACKUP_ENABLED, false),
+    time: normalizeTimeOfDay(source.SCHEDULED_BACKUP_TIME, "04:30"),
+    includeMigrationWeekly: envBool(source.SCHEDULED_BACKUP_MIGRATION_WEEKLY, false),
+    migrationWeekday: normalizeWeekday(source.SCHEDULED_BACKUP_MIGRATION_WEEKDAY, 0),
+    keepLocal: normalizeRetention(source.SCHEDULED_BACKUP_KEEP_LOCAL, 7),
+    uploadRemote: envBool(source.SCHEDULED_BACKUP_UPLOAD_REMOTE, false),
+    lastWorldRunKey: String(source.SCHEDULED_BACKUP_LAST_WORLD_RUN || ""),
+    lastMigrationRunKey: String(source.SCHEDULED_BACKUP_LAST_MIGRATION_RUN || "")
+  };
+}
+
+function publicScheduledBackupConfig(config = scheduledBackupConfig) {
+  return {
+    enabled: config.enabled,
+    time: config.time,
+    includeMigrationWeekly: config.includeMigrationWeekly,
+    migrationWeekday: config.migrationWeekday,
+    keepLocal: config.keepLocal,
+    uploadRemote: config.uploadRemote,
+    lastWorldRunKey: config.lastWorldRunKey,
+    lastMigrationRunKey: config.lastMigrationRunKey
+  };
+}
+
+function normalizeScheduledBackupPayload(payload = {}) {
+  return {
+    enabled: Boolean(payload.enabled),
+    time: normalizeTimeOfDay(payload.time, scheduledBackupConfig.time || "04:30"),
+    includeMigrationWeekly: Boolean(payload.includeMigrationWeekly),
+    migrationWeekday: normalizeWeekday(payload.migrationWeekday, scheduledBackupConfig.migrationWeekday || 0),
+    keepLocal: normalizeRetention(payload.keepLocal, scheduledBackupConfig.keepLocal || 7),
+    uploadRemote: Boolean(payload.uploadRemote),
+    lastWorldRunKey: scheduledBackupConfig.lastWorldRunKey || "",
+    lastMigrationRunKey: scheduledBackupConfig.lastMigrationRunKey || ""
+  };
+}
+
+async function saveScheduledBackupConfig(payload) {
+  const config = normalizeScheduledBackupPayload(payload);
+  await writeEnvFile(COMPOSE_ENV_FILE, {
+    SCHEDULED_BACKUP_ENABLED: config.enabled ? "true" : "false",
+    SCHEDULED_BACKUP_TIME: config.time,
+    SCHEDULED_BACKUP_MIGRATION_WEEKLY: config.includeMigrationWeekly ? "true" : "false",
+    SCHEDULED_BACKUP_MIGRATION_WEEKDAY: String(config.migrationWeekday),
+    SCHEDULED_BACKUP_KEEP_LOCAL: String(config.keepLocal),
+    SCHEDULED_BACKUP_UPLOAD_REMOTE: config.uploadRemote ? "true" : "false"
+  }, { seedFrom: EXAMPLE_ENV_FILE });
+  scheduledBackupConfig = config;
+  return publicScheduledBackupConfig(config);
 }
 
 function publicRemoteBackupConfig(config = remoteBackupConfig) {
@@ -1429,6 +1666,34 @@ async function createBackupPackage(type = "world") {
   };
 }
 
+async function pruneLocalBackups(type, keepLocal) {
+  const backups = (await listBackups())
+    .filter((backup) => backup.type === type)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const stale = backups.slice(Math.max(0, keepLocal));
+  for (const backup of stale) {
+    const filePath = path.join(BACKUP_DIR, safeFileName(backup.name));
+    await fsp.rm(filePath, { force: true });
+    await fsp.rm(getBackupSidecarPath(filePath), { force: true });
+  }
+  return stale.map((backup) => backup.name);
+}
+
+async function createScheduledBackup(type) {
+  const backup = await createBackupPackage(type);
+  let remote = null;
+  let remoteError = "";
+  if (scheduledBackupConfig.uploadRemote || (remoteBackupConfig.enabled && remoteBackupConfig.autoUpload)) {
+    try {
+      remote = await uploadBackupToRemote(backup.name);
+    } catch (error) {
+      remoteError = error.message;
+    }
+  }
+  const pruned = await pruneLocalBackups(type, scheduledBackupConfig.keepLocal);
+  return { backup, remote, remoteError, pruned };
+}
+
 async function validateTarMembers(filePath) {
   const [{ stdout }, { stdout: verbose }] = await Promise.all([
     execFileAsync("tar", ["-tzf", filePath], {
@@ -1644,6 +1909,18 @@ async function sendRconCommand(command) {
   }
 }
 
+function isRconFailureResponse(response) {
+  return /(no player was found|no entity was found|unknown or incomplete command|incorrect argument|that player cannot be found|failed)/i.test(String(response || ""));
+}
+
+async function sendCheckedRconCommand(command, publicMessage = "命令执行失败。") {
+  const response = await sendRconCommand(command);
+  if (isRconFailureResponse(response)) {
+    throw createPublicError(400, "RCON_COMMAND_FAILED", `${publicMessage}${response ? ` ${response}` : ""}`);
+  }
+  return response;
+}
+
 function normalizeChatMessage(value) {
   const message = String(value || "").trim();
   if (!message) throw createPublicError(400, "EMPTY_CHAT_MESSAGE", "聊天内容不能为空。");
@@ -1754,6 +2031,7 @@ async function buildStatus() {
       composeEnvFile: COMPOSE_ENV_FILE
     },
     remoteBackup: publicRemoteBackupConfig(),
+    scheduledBackup: publicScheduledBackupConfig(),
     container: inspect
       ? {
           name: inspect.Name.replace(/^\//, ""),
@@ -1814,9 +2092,13 @@ app.post("/api/logout", (req, res) => {
 
 app.get("/api/player/session", asyncHandler(async (req, res) => {
   const user = await getPlayerSessionUser(req);
+  const config = await readConfigValues();
   res.json({
     authenticated: Boolean(user),
-    user: publicPlayerUser(user)
+    user: publicPlayerUser(user),
+    server: {
+      whitelistEnabled: config.ENABLE_WHITELIST === "true"
+    }
   });
 }));
 
@@ -1845,7 +2127,13 @@ app.post("/api/player/logout", (req, res) => {
 
 app.get("/api/player/me", requirePlayerAuth, asyncHandler(async (req, res) => {
   const user = await findPlayerUserById(req.playerSession.userId);
-  res.json({ user: publicPlayerUser(user) });
+  const config = await readConfigValues();
+  res.json({
+    user: publicPlayerUser(user),
+    server: {
+      whitelistEnabled: config.ENABLE_WHITELIST === "true"
+    }
+  });
 }));
 
 app.post("/api/player/profile", requirePlayerAuth, asyncHandler(async (req, res) => {
@@ -1866,6 +2154,28 @@ app.post("/api/player/whitelist/request", requirePlayerAuth, asyncHandler(async 
     }
   }
   res.json({ ok: true, autoApproved, user: publicPlayerUser(user) });
+}));
+
+app.post("/api/player/actions/set-home", requirePlayerAuth, asyncHandler(async (req, res) => {
+  const user = await setPlayerHome(req.playerSession.userId);
+  res.json({ ok: true, user: publicPlayerUser(user) });
+}));
+
+app.post("/api/player/actions/home", requirePlayerAuth, asyncHandler(async (req, res) => {
+  res.json({ ok: true, result: await teleportPlayerHome(req.playerSession.userId), user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
+}));
+
+app.post("/api/player/actions/spawn", requirePlayerAuth, asyncHandler(async (req, res) => {
+  res.json({ ok: true, result: await teleportPlayerSpawn(req.playerSession.userId), user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
+}));
+
+app.post("/api/player/actions/rescue", requirePlayerAuth, asyncHandler(async (req, res) => {
+  res.json({ ok: true, result: await rescuePlayer(req.playerSession.userId), user: publicPlayerUser(await findPlayerUserById(req.playerSession.userId)) });
+}));
+
+app.post("/api/player/actions/daily-kit", requirePlayerAuth, asyncHandler(async (req, res) => {
+  const user = await claimDailyKit(req.playerSession.userId);
+  res.json({ ok: true, user: publicPlayerUser(user) });
 }));
 
 app.get("/api/player/players", requirePlayerAuth, asyncHandler(async (_req, res) => {
@@ -1947,8 +2257,13 @@ app.get("/api/players", asyncHandler(async (_req, res) => {
 }));
 
 app.get("/api/player-users", asyncHandler(async (_req, res) => {
-  const store = await readPlayerStore();
-  res.json({ users: store.users.map(publicPlayerUser) });
+  const [store, config] = await Promise.all([readPlayerStore(), readConfigValues()]);
+  res.json({
+    users: store.users.map(publicPlayerUser),
+    server: {
+      whitelistEnabled: config.ENABLE_WHITELIST === "true"
+    }
+  });
 }));
 
 app.post("/api/player-users/:id/approve", asyncHandler(async (req, res) => {
@@ -2065,6 +2380,14 @@ app.post("/api/backups/remote/test", asyncHandler(async (_req, res) => {
   res.json({ ok: true, config: await testRemoteBackupConnection(_req.body || null) });
 }));
 
+app.get("/api/backups/schedule", asyncHandler(async (_req, res) => {
+  res.json({ config: publicScheduledBackupConfig() });
+}));
+
+app.post("/api/backups/schedule", asyncHandler(async (req, res) => {
+  res.json({ ok: true, config: await saveScheduledBackupConfig(req.body || {}) });
+}));
+
 app.post("/api/backups/remote/import", asyncHandler(async (req, res) => {
   res.json({ ok: true, backup: await importRemoteBackup(req.body?.key, { overwrite: Boolean(req.body?.overwrite) }) });
 }));
@@ -2133,6 +2456,7 @@ app.use((error, _req, res, _next) => {
 const logsWss = new WebSocket.Server({ noServer: true });
 const chatWss = new WebSocket.Server({ noServer: true });
 const playerChatWss = new WebSocket.Server({ noServer: true });
+let scheduledBackupRunning = false;
 
 function broadcastChatMessage(message) {
   const payload = JSON.stringify(message);
@@ -2284,7 +2608,63 @@ setInterval(() => {
   for (const [sessionId, session] of sessions.entries()) {
     if (session.expiresAt < now) sessions.delete(sessionId);
   }
+  for (const [sessionId, session] of playerSessions.entries()) {
+    if (session.expiresAt < now) playerSessions.delete(sessionId);
+  }
 }, 60 * 60 * 1000).unref();
+
+async function updateScheduledBackupRunKeys(updates) {
+  scheduledBackupConfig = { ...scheduledBackupConfig, ...updates };
+  await writeEnvFile(COMPOSE_ENV_FILE, {
+    SCHEDULED_BACKUP_LAST_WORLD_RUN: scheduledBackupConfig.lastWorldRunKey,
+    SCHEDULED_BACKUP_LAST_MIGRATION_RUN: scheduledBackupConfig.lastMigrationRunKey
+  }, { seedFrom: EXAMPLE_ENV_FILE });
+}
+
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+async function checkScheduledBackups() {
+  if (scheduledBackupRunning || !scheduledBackupConfig.enabled) return;
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  if (hhmm !== scheduledBackupConfig.time) return;
+
+  scheduledBackupRunning = true;
+  try {
+    const today = localDateKey(now);
+    if (scheduledBackupConfig.lastWorldRunKey !== today) {
+      console.log(`[scheduled-backup] creating world backup for ${today}`);
+      const result = await createScheduledBackup("world");
+      console.log(`[scheduled-backup] world backup created: ${result.backup.name}${result.remoteError ? `, remote failed: ${result.remoteError}` : ""}`);
+      await updateScheduledBackupRunKeys({ lastWorldRunKey: today });
+    }
+
+    const migrationKey = `${today}-migration`;
+    if (
+      scheduledBackupConfig.includeMigrationWeekly &&
+      now.getDay() === scheduledBackupConfig.migrationWeekday &&
+      scheduledBackupConfig.lastMigrationRunKey !== migrationKey
+    ) {
+      console.log(`[scheduled-backup] creating migration backup for ${today}`);
+      const result = await createScheduledBackup("migration");
+      console.log(`[scheduled-backup] migration backup created: ${result.backup.name}${result.remoteError ? `, remote failed: ${result.remoteError}` : ""}`);
+      await updateScheduledBackupRunKeys({ lastMigrationRunKey: migrationKey });
+    }
+  } catch (error) {
+    console.error("[scheduled-backup] failed:", error);
+  } finally {
+    scheduledBackupRunning = false;
+  }
+}
+
+setInterval(() => {
+  checkScheduledBackups().catch((error) => console.error("[scheduled-backup] failed:", error));
+}, 60 * 1000).unref();
 
 loadPanelPasswordFromEnv().catch((error) => {
   console.warn(`Unable to load PANEL_PASSWORD from ${COMPOSE_ENV_FILE}: ${error.message}`);

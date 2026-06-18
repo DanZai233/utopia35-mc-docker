@@ -138,7 +138,7 @@
           </div>
           <section class="notice">
             <strong>玩家入口已启用。</strong>
-            <span>普通玩家可以在 /player 注册登录、绑定 Minecraft 名称、申请白名单和使用网页聊天。玩家不能执行任意 RCON 命令。</span>
+            <span>普通玩家可以在 /player 注册登录、绑定 Minecraft 名称、使用网页聊天和自助 home、出生点、自救、每日礼包。玩家不能执行任意 RCON 命令。</span>
           </section>
           <div id="player-users-list" class="table-list"></div>
         </section>
@@ -257,6 +257,55 @@
               <button type="button" data-create-backup="config" class="secondary">备份配置</button>
               <button type="button" data-create-backup="migration" class="secondary">创建迁移包</button>
             </div>
+          </section>
+          <section class="panel backup-schedule-panel">
+            <div class="section-head">
+              <h2>定时备份</h2>
+              <span id="scheduled-backup-state" class="state-pill stopped">未启用</span>
+            </div>
+            <form id="scheduled-backup-form" class="remote-backup-form">
+              <div class="field boolean">
+                <label>
+                  <input id="scheduled-backup-enabled" type="checkbox">
+                  <span>每天自动备份地图</span>
+                </label>
+              </div>
+              <label class="field">
+                <span>执行时间</span>
+                <input id="scheduled-backup-time" type="time" required>
+              </label>
+              <label class="field">
+                <span>本地保留数量</span>
+                <input id="scheduled-backup-keep-local" type="number" min="1" max="200" step="1">
+              </label>
+              <label class="field">
+                <span>迁移包星期</span>
+                <select id="scheduled-backup-migration-weekday">
+                  <option value="0">周日</option>
+                  <option value="1">周一</option>
+                  <option value="2">周二</option>
+                  <option value="3">周三</option>
+                  <option value="4">周四</option>
+                  <option value="5">周五</option>
+                  <option value="6">周六</option>
+                </select>
+              </label>
+              <div class="field boolean">
+                <label>
+                  <input id="scheduled-backup-migration-weekly" type="checkbox">
+                  <span>每周创建迁移包</span>
+                </label>
+              </div>
+              <div class="field boolean">
+                <label>
+                  <input id="scheduled-backup-upload-remote" type="checkbox">
+                  <span>完成后上传远端</span>
+                </label>
+              </div>
+              <div class="form-actions remote-form-actions">
+                <button type="submit">保存定时备份</button>
+              </div>
+            </form>
           </section>
           <section class="panel backup-remote-panel">
             <div class="section-head">

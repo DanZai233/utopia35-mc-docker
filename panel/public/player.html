@@ -73,7 +73,7 @@
             <strong id="player-metric-minecraft">-</strong>
           </article>
           <article>
-            <span>白名单状态</span>
+            <span>账号状态</span>
             <strong id="player-metric-status">-</strong>
           </article>
           <article>
@@ -97,7 +97,7 @@
               </div>
             </form>
             <div class="button-row player-actions">
-              <button id="player-request-whitelist-button" type="button">申请加入白名单</button>
+              <button id="player-request-whitelist-button" type="button" hidden>申请加入白名单</button>
               <button id="player-refresh-button" type="button" class="secondary">刷新状态</button>
             </div>
             <p id="player-profile-message" class="form-message" role="status"></p>
@@ -105,11 +105,26 @@
 
           <section class="panel">
             <div class="section-head">
-              <h2>在线玩家</h2>
-              <button id="player-refresh-online-button" type="button" class="secondary">刷新</button>
+              <h2>自助操作</h2>
+              <span id="player-daily-kit-state" class="state-pill">读取中</span>
             </div>
-            <div id="player-online-list" class="player-list"></div>
+            <div class="quick-grid player-self-actions">
+              <button id="player-set-home-button" type="button">设置 home</button>
+              <button id="player-home-button" type="button" class="secondary">回 home</button>
+              <button id="player-spawn-button" type="button" class="secondary">回出生点</button>
+              <button id="player-rescue-button" type="button" class="secondary">卡住自救</button>
+              <button id="player-daily-kit-button" type="button">领取每日礼包</button>
+            </div>
+            <p id="player-action-message" class="form-message" role="status"></p>
           </section>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2>在线玩家</h2>
+            <button id="player-refresh-online-button" type="button" class="secondary">刷新</button>
+          </div>
+          <div id="player-online-list" class="player-list"></div>
         </section>
 
         <section class="player-chat-panel">

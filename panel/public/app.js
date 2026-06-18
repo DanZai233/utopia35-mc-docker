@@ -12,6 +12,8 @@ const state = {
   needsRestart: false,
   lastPlayers: [],
   remoteBackupConfig: null,
+  scheduledBackupConfig: null,
+  whitelistEnabled: false,
   mapStatus: null,
   mapFrameUrl: ""
 };
@@ -231,6 +233,8 @@ function renderStatus(status) {
   $("#metric-health").textContent = container?.health || container?.state || "-";
   $("#metric-memory").textContent = status.stats ? `${formatBytes(status.stats.memoryUsage)} / ${formatBytes(status.stats.memoryLimit)}` : "-";
   $("#metric-cpu").textContent = status.stats ? `${status.stats.cpuPercent.toFixed(1)}%` : "-";
+  state.whitelistEnabled = status.config.ENABLE_WHITELIST === "true";
+  const pendingLabel = state.whitelistEnabled ? ` / ${status.counts.pendingPlayerUsers || 0} 待处理` : "";
 
   $("#summary-list").innerHTML = definitionList({
     "MOTD": status.config.MOTD,
@@ -240,7 +244,7 @@ function renderStatus(status) {
     "内存": `${status.config.MIN_MEMORY} / ${status.config.MAX_MEMORY}`,
     "RCON": status.config.ENABLE_RCON,
     "Mods": `${status.counts.enabledMods}/${status.counts.mods} 已启用`,
-    "玩家中心": `${status.counts.playerUsers || 0} 个账号 / ${status.counts.pendingPlayerUsers || 0} 待处理`,
+    "玩家中心": `${status.counts.playerUsers || 0} 个账号${pendingLabel}`,
     "备份": `${status.counts.backups} 个`
   });
 
@@ -255,6 +259,10 @@ function renderStatus(status) {
   if (status.remoteBackup) {
     state.remoteBackupConfig = status.remoteBackup;
     renderRemoteBackupConfig(status.remoteBackup);
+  }
+  if (status.scheduledBackup) {
+    state.scheduledBackupConfig = status.scheduledBackup;
+    renderScheduledBackupConfig(status.scheduledBackup);
   }
 
   const warning = $("#security-warning");
@@ -568,16 +576,19 @@ function fillPlayerInputs(player) {
   showToast(`已填入玩家：${player}`);
 }
 
-function playerStatusLabel(status) {
+function playerStatusLabel(status, whitelistEnabled = state.whitelistEnabled) {
+  if (!whitelistEnabled && status !== "disabled") return "可使用";
   if (status === "approved") return "已加入白名单";
+  if (status === "pending") return "待处理";
   if (status === "rejected") return "已拒绝";
   if (status === "disabled") return "已禁用";
-  return "待处理";
+  return "可使用";
 }
 
 async function loadPlayerUsers(options = {}) {
   try {
     const data = await api("/api/player-users");
+    state.whitelistEnabled = Boolean(data.server?.whitelistEnabled);
     renderPlayerUsers(data.users || []);
   } catch (error) {
     renderPlayerUsers([], error.message);
@@ -597,11 +608,19 @@ function renderPlayerUsers(users, error = "") {
     list.innerHTML = `<div class="table-row"><div><div class="table-title">还没有玩家注册</div><div class="table-meta">把 /player 发给玩家即可开始注册。</div></div></div>`;
     return;
   }
-  list.innerHTML = users.map((user) => `
+  const whitelistActions = (user) => state.whitelistEnabled
+    ? `
+        <button class="secondary" data-player-user-approve="${escapeHtml(user.id)}" ${user.minecraftName ? "" : "disabled"}>批准白名单</button>
+        <button class="ghost" data-player-user-reject="${escapeHtml(user.id)}">拒绝</button>
+      `
+    : "";
+  list.innerHTML = users.map((user) => {
+    const displayStatus = state.whitelistEnabled ? (user.status || "active") : user.status === "disabled" ? "disabled" : "active";
+    return `
     <div class="table-row player-user-row">
       <div>
         <div class="table-title">
-          <span class="backup-type ${escapeHtml(user.status || "pending")}">${escapeHtml(playerStatusLabel(user.status))}</span>
+          <span class="backup-type ${escapeHtml(displayStatus)}">${escapeHtml(playerStatusLabel(user.status))}</span>
           ${escapeHtml(user.username)}
         </div>
         <div class="table-meta">
@@ -610,12 +629,12 @@ function renderPlayerUsers(users, error = "") {
         ${user.note ? `<div class="table-meta">备注：${escapeHtml(user.note)}</div>` : ""}
       </div>
       <div class="table-actions">
-        <button class="secondary" data-player-user-approve="${escapeHtml(user.id)}" ${user.minecraftName ? "" : "disabled"}>批准白名单</button>
-        <button class="ghost" data-player-user-reject="${escapeHtml(user.id)}">拒绝</button>
+        ${whitelistActions(user)}
         <button class="danger" data-player-user-delete="${escapeHtml(user.id)}">删除</button>
       </div>
     </div>
-  `).join("");
+  `;
+  }).join("");
 }
 
 async function withButtonBusy(button, label, task) {
@@ -858,6 +877,50 @@ function renderRemoteBackups(remote, error) {
   `).join("");
 }
 
+function renderScheduledBackupConfig(config = {}) {
+  const statePill = $("#scheduled-backup-state");
+  if (!statePill) return;
+  statePill.className = "state-pill";
+  if (config.enabled) {
+    statePill.textContent = `已启用 / ${config.time || "04:30"}`;
+    statePill.classList.add("running");
+  } else {
+    statePill.textContent = "未启用";
+    statePill.classList.add("stopped");
+  }
+  $("#scheduled-backup-enabled").checked = Boolean(config.enabled);
+  $("#scheduled-backup-time").value = config.time || "04:30";
+  $("#scheduled-backup-keep-local").value = config.keepLocal || 7;
+  $("#scheduled-backup-migration-weekly").checked = Boolean(config.includeMigrationWeekly);
+  $("#scheduled-backup-migration-weekday").value = String(config.migrationWeekday ?? 0);
+  $("#scheduled-backup-upload-remote").checked = Boolean(config.uploadRemote);
+}
+
+function readScheduledBackupForm() {
+  return {
+    enabled: $("#scheduled-backup-enabled").checked,
+    time: $("#scheduled-backup-time").value || "04:30",
+    keepLocal: Number($("#scheduled-backup-keep-local").value || 7),
+    includeMigrationWeekly: $("#scheduled-backup-migration-weekly").checked,
+    migrationWeekday: Number($("#scheduled-backup-migration-weekday").value || 0),
+    uploadRemote: $("#scheduled-backup-upload-remote").checked
+  };
+}
+
+async function saveScheduledBackupConfig(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type='submit']");
+  await withButtonBusy(button, "保存中", async () => {
+    const result = await api("/api/backups/schedule", {
+      method: "POST",
+      body: readScheduledBackupForm()
+    });
+    state.scheduledBackupConfig = result.config;
+    renderScheduledBackupConfig(result.config);
+    showToast("定时备份配置已保存。");
+  });
+}
+
 function readRemoteBackupForm() {
   return {
     enabled: $("#remote-backup-enabled").checked,
@@ -989,6 +1052,7 @@ function bindEvents() {
 
   $("#config-form").addEventListener("submit", (event) => saveConfig(event).catch(showOperationError));
   $("#panel-password-form").addEventListener("submit", (event) => changePanelPassword(event).catch(showOperationError));
+  $("#scheduled-backup-form").addEventListener("submit", (event) => saveScheduledBackupConfig(event).catch(showOperationError));
   $("#remote-backup-form").addEventListener("submit", (event) => saveRemoteBackupConfig(event).catch(showOperationError));
   $("#test-remote-backup-button").addEventListener("click", () => testRemoteBackup().catch(showOperationError));
   $("#setup-rcon-button").addEventListener("click", async () => {

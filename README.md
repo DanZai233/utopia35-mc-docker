@@ -193,9 +193,10 @@ Compose 的运行数据会在仓库目录的 `./data`。
 - 快捷执行玩家管理命令：`op`、`deop`、白名单、踢出、封禁、广播、保存地图等
 - 查看在线玩家并一键填入玩家名
 - 单独查看玩家聊天，并从面板向游戏内发送聊天消息
-- 提供 `/player` 玩家中心：玩家可注册登录、绑定 Minecraft 名称、申请白名单、查看在线玩家和网页聊天
+- 提供 `/player` 玩家中心：玩家可注册登录、绑定 Minecraft 名称、查看在线玩家、网页聊天、自助回 home/出生点、卡住自救和每日礼包
 - 上传、禁用、启用、删除 mod
 - 创建、下载、恢复和删除地图/配置/迁移备份
+- 支持每天定时备份地图、每周定时迁移包、本地保留数量和定时上传远端
 - 把备份上传到 S3/R2/MinIO，或从远端拉回本地恢复
 - 安装并嵌入 BlueMap Web 世界地图
 
@@ -281,7 +282,17 @@ http://127.0.0.1:8100
 | `BLUEMAP_PORT` | `8100` | BlueMap 容器内端口 |
 | `BLUEMAP_PUBLIC_URL` | 空 | 面板嵌入地图时使用的公网/反代地址，空则使用内置 `/bluemap/` 代理 |
 | `BLUEMAP_INTERNAL_URL` | `http://minecraft:8100` | 面板容器访问 BlueMap 的内部地址 |
-| `PLAYER_AUTO_WHITELIST` | `false` | 玩家中心申请白名单时是否自动执行 `whitelist add`；默认需要管理员在“玩家中心”批准 |
+| `PLAYER_AUTO_WHITELIST` | `false` | 开启白名单时，玩家中心申请白名单后是否自动执行 `whitelist add` |
+| `PLAYER_ACTION_COOLDOWN_SECONDS` | `60` | 玩家中心自助传送/自救冷却时间 |
+| `PLAYER_DAILY_KIT_HOURS` | `24` | 每日礼包冷却小时数 |
+| `PLAYER_DAILY_KIT_COMMANDS` | `give {player} minecraft:bread 16;give {player} minecraft:torch 16` | 每日礼包命令模板，使用 `;` 分隔多条命令 |
+| `PLAYER_SPAWN_DIMENSION` | `minecraft:overworld` | 玩家中心“回出生点”的目标维度 |
+| `PLAYER_SPAWN_X/Y/Z` | `0 / 80 / 0` | 玩家中心“回出生点”的目标坐标 |
+| `SCHEDULED_BACKUP_ENABLED` | `false` | 是否启用每天定时地图备份 |
+| `SCHEDULED_BACKUP_TIME` | `04:30` | 定时备份执行时间，使用面板容器本地时间 |
+| `SCHEDULED_BACKUP_MIGRATION_WEEKLY` | `false` | 是否每周额外创建迁移包 |
+| `SCHEDULED_BACKUP_KEEP_LOCAL` | `7` | 每种定时备份在本地保留的数量 |
+| `SCHEDULED_BACKUP_UPLOAD_REMOTE` | `false` | 定时备份完成后是否上传远端 |
 | `ENV_CONFIG_FILE` | `/data/server.env` | Minecraft 启动时读取的运行配置文件 |
 
 ## 备份与迁移
