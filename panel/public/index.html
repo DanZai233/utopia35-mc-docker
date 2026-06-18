@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Utopia 3.5 控制面板</title>
-    <link rel="stylesheet" href="/styles.css?v=20260617-map-pink">
+    <link rel="stylesheet" href="/styles.css?v=20260618-player-center">
   </head>
   <body>
     <section id="login-view" class="login-shell" hidden>
@@ -42,6 +42,7 @@
         <button class="active" data-tab="overview">状态</button>
         <button data-tab="map">地图</button>
         <button data-tab="chat">聊天</button>
+        <button data-tab="player-center">玩家中心</button>
         <button data-tab="config">配置</button>
         <button data-tab="console">控制台</button>
         <button data-tab="players">玩家</button>
@@ -125,6 +126,21 @@
               <button type="submit">发送</button>
             </form>
           </section>
+        </section>
+
+        <section id="tab-player-center" class="tab-panel">
+          <div class="section-head">
+            <h2>玩家中心</h2>
+            <div class="button-row">
+              <a class="download-button" href="/player" target="_blank" rel="noreferrer">打开玩家入口</a>
+              <button id="refresh-player-users-button" type="button" class="secondary">刷新用户</button>
+            </div>
+          </div>
+          <section class="notice">
+            <strong>玩家入口已启用。</strong>
+            <span>普通玩家可以在 /player 注册登录、绑定 Minecraft 名称、申请白名单和使用网页聊天。玩家不能执行任意 RCON 命令。</span>
+          </section>
+          <div id="player-users-list" class="table-list"></div>
         </section>
 
         <section id="tab-config" class="tab-panel">
@@ -314,6 +330,6 @@
     </section>
 
     <div id="toast" class="toast" hidden></div>
-    <script src="/app.js?v=20260618-map-iframe"></script>
+    <script src="/app.js?v=20260618-player-center"></script>
   </body>
 </html>

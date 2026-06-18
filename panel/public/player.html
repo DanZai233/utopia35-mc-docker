@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Utopia 3.5 玩家中心</title>
+    <link rel="stylesheet" href="/styles.css?v=20260618-player-center">
+  </head>
+  <body class="player-page">
+    <section id="player-auth-view" class="login-shell" hidden>
+      <div class="player-auth-grid">
+        <form id="player-login-form" class="login-panel">
+          <div>
+            <p class="eyebrow">Utopia 3.5</p>
+            <h1>玩家中心</h1>
+          </div>
+          <label>
+            <span>账号</span>
+            <input id="player-login-username" type="text" autocomplete="username" required>
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="player-login-password" type="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit">登录</button>
+          <p id="player-login-error" class="error-text" role="alert"></p>
+        </form>
+
+        <form id="player-register-form" class="login-panel">
+          <div>
+            <p class="eyebrow">New Player</p>
+            <h1>注册账号</h1>
+          </div>
+          <label>
+            <span>账号</span>
+            <input id="player-register-username" type="text" autocomplete="username" minlength="3" maxlength="16" required>
+          </label>
+          <label>
+            <span>Minecraft 名称</span>
+            <input id="player-register-minecraft" type="text" minlength="3" maxlength="16" required>
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="player-register-password" type="password" autocomplete="new-password" minlength="8" required>
+          </label>
+          <button type="submit">注册并登录</button>
+          <p id="player-register-error" class="error-text" role="alert"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="player-app-view" class="app-shell" hidden>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Utopia 3.5</p>
+          <h1>玩家中心</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="player-account-state" class="state-pill stopped">读取中</span>
+          <a class="download-button" href="/" target="_blank" rel="noreferrer">控制面板</a>
+          <button id="player-logout-button" class="ghost">退出</button>
+        </div>
+      </header>
+
+      <main class="player-main">
+        <section class="metric-grid player-metrics">
+          <article>
+            <span>账号</span>
+            <strong id="player-metric-username">-</strong>
+          </article>
+          <article>
+            <span>Minecraft 名称</span>
+            <strong id="player-metric-minecraft">-</strong>
+          </article>
+          <article>
+            <span>白名单状态</span>
+            <strong id="player-metric-status">-</strong>
+          </article>
+          <article>
+            <span>在线玩家</span>
+            <strong id="player-metric-online">-</strong>
+          </article>
+        </section>
+
+        <section class="two-column">
+          <section class="panel">
+            <div class="section-head">
+              <h2>我的资料</h2>
+            </div>
+            <form id="player-profile-form" class="fields-grid player-profile-form">
+              <label class="field">
+                <span>Minecraft 名称</span>
+                <input id="player-profile-minecraft" type="text" minlength="3" maxlength="16" required>
+              </label>
+              <div class="form-actions">
+                <button type="submit">保存绑定</button>
+              </div>
+            </form>
+            <div class="button-row player-actions">
+              <button id="player-request-whitelist-button" type="button">申请加入白名单</button>
+              <button id="player-refresh-button" type="button" class="secondary">刷新状态</button>
+            </div>
+            <p id="player-profile-message" class="form-message" role="status"></p>
+          </section>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2>在线玩家</h2>
+              <button id="player-refresh-online-button" type="button" class="secondary">刷新</button>
+            </div>
+            <div id="player-online-list" class="player-list"></div>
+          </section>
+        </section>
+
+        <section class="player-chat-panel">
+          <div class="section-head">
+            <h2>服务器聊天</h2>
+            <div class="button-row">
+              <span id="player-chat-state" class="state-pill stopped">未连接</span>
+              <button id="player-connect-chat-button" type="button" class="secondary">连接聊天</button>
+              <button id="player-clear-chat-button" type="button" class="ghost">清空显示</button>
+            </div>
+          </div>
+          <section class="chat-shell">
+            <div id="player-chat-output" class="chat-output" aria-live="polite">
+              <div class="empty-state">还没有聊天消息。</div>
+            </div>
+            <form id="player-chat-form" class="chat-compose">
+              <input id="player-chat-input" type="text" placeholder="输入要发到游戏里的消息" maxlength="240" autocomplete="off">
+              <button type="submit">发送</button>
+            </form>
+          </section>
+        </section>
+      </main>
+    </section>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/player.js?v=20260618-player-center"></script>
+  </body>
+</html>

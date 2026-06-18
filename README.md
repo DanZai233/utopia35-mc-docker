@@ -193,6 +193,7 @@ Compose 的运行数据会在仓库目录的 `./data`。
 - 快捷执行玩家管理命令：`op`、`deop`、白名单、踢出、封禁、广播、保存地图等
 - 查看在线玩家并一键填入玩家名
 - 单独查看玩家聊天，并从面板向游戏内发送聊天消息
+- 提供 `/player` 玩家中心：玩家可注册登录、绑定 Minecraft 名称、申请白名单、查看在线玩家和网页聊天
 - 上传、禁用、启用、删除 mod
 - 创建、下载、恢复和删除地图/配置/迁移备份
 - 把备份上传到 S3/R2/MinIO，或从远端拉回本地恢复
@@ -280,6 +281,7 @@ http://127.0.0.1:8100
 | `BLUEMAP_PORT` | `8100` | BlueMap 容器内端口 |
 | `BLUEMAP_PUBLIC_URL` | 空 | 面板嵌入地图时使用的公网/反代地址，空则使用内置 `/bluemap/` 代理 |
 | `BLUEMAP_INTERNAL_URL` | `http://minecraft:8100` | 面板容器访问 BlueMap 的内部地址 |
+| `PLAYER_AUTO_WHITELIST` | `false` | 玩家中心申请白名单时是否自动执行 `whitelist add`；默认需要管理员在“玩家中心”批准 |
 | `ENV_CONFIG_FILE` | `/data/server.env` | Minecraft 启动时读取的运行配置文件 |
 
 ## 备份与迁移

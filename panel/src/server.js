@@ -35,6 +35,7 @@ const COMPOSE_ENV_FILE = process.env.COMPOSE_ENV_FILE || path.join(WORKSPACE_DIR
 const RUNTIME_ENV_FILE = process.env.RUNTIME_ENV_FILE || path.join(DATA_DIR, "server.env");
 const BACKUP_DIR = process.env.BACKUP_DIR || path.join(WORKSPACE_DIR, "backups");
 const EXAMPLE_ENV_FILE = process.env.EXAMPLE_ENV_FILE || path.join(WORKSPACE_DIR, ".env.example");
+const PLAYER_USERS_FILE = process.env.PLAYER_USERS_FILE || path.join(DATA_DIR, "player-users.json");
 const MODS_DIR = path.join(DATA_DIR, "mods");
 const SERVER_PROPERTIES_FILE = path.join(DATA_DIR, "server.properties");
 const DOCKER_SOCKET = process.env.DOCKER_SOCKET || "/var/run/docker.sock";
@@ -46,6 +47,7 @@ const BLUEMAP_INTERNAL_URL = process.env.BLUEMAP_INTERNAL_URL || `http://${RCON_
 const BLUEMAP_GAME_VERSION = process.env.BLUEMAP_GAME_VERSION || "1.20.1";
 const BLUEMAP_MODRINTH_API = "https://api.modrinth.com/v2/project/bluemap/version";
 const BLUEMAP_PROJECT_URL = "https://modrinth.com/plugin/bluemap";
+const PLAYER_AUTO_WHITELIST = envBool(process.env.PLAYER_AUTO_WHITELIST, false);
 let remoteBackupConfig = readRemoteBackupConfigFromEnv(process.env);
 
 const docker = new Docker({ socketPath: DOCKER_SOCKET });
@@ -57,10 +59,15 @@ const upload = multer({
 });
 
 const sessions = new Map();
+const playerSessions = new Map();
 const SESSION_COOKIE = "utopia35_panel";
+const PLAYER_SESSION_COOKIE = "utopia35_player";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PLAYER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CHAT_HISTORY_LIMIT = 200;
 const chatHistory = [];
+const playerChatRate = new Map();
+const scryptAsync = promisify(crypto.scrypt);
 
 const CONFIG_FIELDS = [
   { key: "EULA", label: "接受 EULA", type: "boolean", default: "false", group: "基础" },
@@ -141,6 +148,37 @@ function setSessionCookie(res, sessionId) {
 
 function clearSessionCookie(res) {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+}
+
+function getPlayerSession(req) {
+  const sessionId = parseCookies(req)[PLAYER_SESSION_COOKIE];
+  if (!sessionId) return null;
+  const session = playerSessions.get(sessionId);
+  if (!session || session.expiresAt < Date.now()) {
+    playerSessions.delete(sessionId);
+    return null;
+  }
+  session.expiresAt = Date.now() + PLAYER_SESSION_TTL_MS;
+  return session;
+}
+
+function requirePlayerAuth(req, res, next) {
+  const session = getPlayerSession(req);
+  if (session) {
+    req.playerSession = session;
+    next();
+    return;
+  }
+  res.status(401).json({ error: "PLAYER_NOT_AUTHENTICATED", message: "需要先登录玩家中心。" });
+}
+
+function setPlayerSessionCookie(res, sessionId) {
+  const maxAge = Math.floor(PLAYER_SESSION_TTL_MS / 1000);
+  res.setHeader("Set-Cookie", `${PLAYER_SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`);
+}
+
+function clearPlayerSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${PLAYER_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
 function timingSafePasswordEqual(input) {
@@ -324,6 +362,112 @@ function normalizePanelPassword(value) {
   return password;
 }
 
+function normalizePlayerUsername(value) {
+  const username = String(value || "").trim();
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) {
+    throw createPublicError(400, "BAD_PLAYER_USERNAME", "账号只能包含 3-16 位字母、数字或下划线。");
+  }
+  return username;
+}
+
+function normalizeMinecraftName(value) {
+  const name = String(value || "").trim();
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(name)) {
+    throw createPublicError(400, "BAD_MINECRAFT_NAME", "Minecraft 名称只能包含 3-16 位字母、数字或下划线。");
+  }
+  return name;
+}
+
+function normalizePlayerPassword(value) {
+  const password = String(value ?? "");
+  if (password.length < 8) {
+    throw createPublicError(400, "WEAK_PLAYER_PASSWORD", "密码至少需要 8 个字符。");
+  }
+  if (/[\r\n\0]/.test(password)) {
+    throw createPublicError(400, "BAD_PLAYER_PASSWORD", "密码不能包含换行或空字符。");
+  }
+  return password;
+}
+
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("base64url");
+  const hash = await scryptAsync(password, salt, 64);
+  return `scrypt:${salt}:${hash.toString("base64url")}`;
+}
+
+async function verifyPassword(password, storedHash) {
+  const [scheme, salt, hash] = String(storedHash || "").split(":");
+  if (scheme !== "scrypt" || !salt || !hash) return false;
+  const expected = Buffer.from(hash, "base64url");
+  const actual = await scryptAsync(String(password || ""), salt, expected.length);
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+function createEmptyPlayerStore() {
+  return { version: 1, users: [] };
+}
+
+async function readPlayerStore() {
+  try {
+    const store = JSON.parse(await fsp.readFile(PLAYER_USERS_FILE, "utf8"));
+    return {
+      version: 1,
+      users: Array.isArray(store.users) ? store.users : []
+    };
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return createEmptyPlayerStore();
+    throw error;
+  }
+}
+
+async function writePlayerStore(store) {
+  await fsp.mkdir(path.dirname(PLAYER_USERS_FILE), { recursive: true });
+  const tmp = `${PLAYER_USERS_FILE}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  await fsp.writeFile(tmp, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  await fsp.rename(tmp, PLAYER_USERS_FILE);
+}
+
+async function updatePlayerStore(mutator) {
+  const store = await readPlayerStore();
+  const result = await mutator(store);
+  await writePlayerStore(store);
+  return result;
+}
+
+function publicPlayerUser(user) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    username: user.username,
+    minecraftName: user.minecraftName || "",
+    status: user.status || "pending",
+    role: user.role || "player",
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    lastLoginAt: user.lastLoginAt || "",
+    whitelistRequestedAt: user.whitelistRequestedAt || "",
+    whitelistApprovedAt: user.whitelistApprovedAt || "",
+    approvedBy: user.approvedBy || "",
+    note: user.note || ""
+  };
+}
+
+async function findPlayerUserById(id) {
+  const store = await readPlayerStore();
+  return store.users.find((user) => user.id === id) || null;
+}
+
+async function getPlayerSessionUser(req) {
+  const session = getPlayerSession(req);
+  if (!session) return null;
+  const user = await findPlayerUserById(session.userId);
+  if (!user) {
+    playerSessions.delete(parseCookies(req)[PLAYER_SESSION_COOKIE]);
+    return null;
+  }
+  return user;
+}
+
 async function changePanelPassword({ currentPassword, newPassword }, currentSessionId) {
   if (!timingSafePasswordEqual(currentPassword)) {
     throw createPublicError(401, "BAD_PASSWORD", "当前密码不正确。");
@@ -338,6 +482,146 @@ async function changePanelPassword({ currentPassword, newPassword }, currentSess
     if (sessionId !== currentSessionId) sessions.delete(sessionId);
   }
   return { defaultPassword: isDefaultPanelPassword() };
+}
+
+async function registerPlayerUser(payload = {}) {
+  const username = normalizePlayerUsername(payload.username);
+  const minecraftName = payload.minecraftName ? normalizeMinecraftName(payload.minecraftName) : "";
+  const password = normalizePlayerPassword(payload.password);
+  const now = new Date().toISOString();
+  const passwordHash = await hashPassword(password);
+  return updatePlayerStore((store) => {
+    if (store.users.some((user) => user.username.toLowerCase() === username.toLowerCase())) {
+      throw createPublicError(409, "PLAYER_USERNAME_EXISTS", "这个账号已经被注册。");
+    }
+    if (minecraftName && store.users.some((user) => String(user.minecraftName || "").toLowerCase() === minecraftName.toLowerCase())) {
+      throw createPublicError(409, "MINECRAFT_NAME_EXISTS", "这个 Minecraft 名称已经被绑定。");
+    }
+    const user = {
+      id: crypto.randomUUID(),
+      username,
+      minecraftName,
+      passwordHash,
+      role: "player",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+      lastLoginAt: "",
+      whitelistRequestedAt: "",
+      whitelistApprovedAt: "",
+      approvedBy: "",
+      note: ""
+    };
+    store.users.push(user);
+    return user;
+  });
+}
+
+async function loginPlayerUser(payload = {}) {
+  const username = normalizePlayerUsername(payload.username);
+  const password = String(payload.password || "");
+  let matched = null;
+  const store = await readPlayerStore();
+  for (const user of store.users) {
+    if (user.username.toLowerCase() !== username.toLowerCase()) continue;
+    matched = user;
+    break;
+  }
+  if (!matched || !(await verifyPassword(password, matched.passwordHash))) {
+    throw createPublicError(401, "BAD_PLAYER_LOGIN", "账号或密码不正确。");
+  }
+  if (matched.status === "disabled") {
+    throw createPublicError(403, "PLAYER_DISABLED", "这个玩家账号已被禁用。");
+  }
+  const now = new Date().toISOString();
+  await updatePlayerStore((mutableStore) => {
+    const user = mutableStore.users.find((item) => item.id === matched.id);
+    if (user) user.lastLoginAt = now;
+  });
+  return { ...matched, lastLoginAt: now };
+}
+
+async function updatePlayerMinecraftName(userId, minecraftNameInput) {
+  const minecraftName = normalizeMinecraftName(minecraftNameInput);
+  const now = new Date().toISOString();
+  return updatePlayerStore((store) => {
+    if (store.users.some((user) => user.id !== userId && String(user.minecraftName || "").toLowerCase() === minecraftName.toLowerCase())) {
+      throw createPublicError(409, "MINECRAFT_NAME_EXISTS", "这个 Minecraft 名称已经被绑定。");
+    }
+    const user = store.users.find((item) => item.id === userId);
+    if (!user) throw createPublicError(404, "PLAYER_NOT_FOUND", "玩家账号不存在。");
+    user.minecraftName = minecraftName;
+    user.updatedAt = now;
+    if (!user.status || user.status === "unbound") user.status = "pending";
+    return user;
+  });
+}
+
+async function approvePlayerWhitelist(userId, approvedBy = "panel") {
+  const now = new Date().toISOString();
+  let approvedUser = null;
+  await updatePlayerStore((store) => {
+    const user = store.users.find((item) => item.id === userId);
+    if (!user) throw createPublicError(404, "PLAYER_NOT_FOUND", "玩家账号不存在。");
+    if (!user.minecraftName) throw createPublicError(400, "PLAYER_NOT_BOUND", "玩家还没有绑定 Minecraft 名称。");
+    user.status = "approved";
+    user.whitelistApprovedAt = now;
+    user.updatedAt = now;
+    user.approvedBy = approvedBy;
+    approvedUser = user;
+  });
+  try {
+    await sendRconCommand(`whitelist add ${approvedUser.minecraftName}`);
+  } catch (error) {
+    await updatePlayerStore((store) => {
+      const user = store.users.find((item) => item.id === userId);
+      if (!user) return;
+      user.status = "pending";
+      user.note = `白名单命令执行失败：${error.message}`;
+      user.updatedAt = new Date().toISOString();
+    });
+    throw error;
+  }
+  return approvedUser;
+}
+
+async function requestPlayerWhitelist(userId) {
+  const now = new Date().toISOString();
+  return updatePlayerStore((store) => {
+    const user = store.users.find((item) => item.id === userId);
+    if (!user) throw createPublicError(404, "PLAYER_NOT_FOUND", "玩家账号不存在。");
+    if (!user.minecraftName) throw createPublicError(400, "PLAYER_NOT_BOUND", "请先绑定 Minecraft 名称。");
+    if (user.status === "approved") return user;
+    user.status = "pending";
+    user.whitelistRequestedAt = now;
+    user.updatedAt = now;
+    user.note = "";
+    return user;
+  });
+}
+
+async function rejectPlayerUser(userId, note = "") {
+  const now = new Date().toISOString();
+  return updatePlayerStore((store) => {
+    const user = store.users.find((item) => item.id === userId);
+    if (!user) throw createPublicError(404, "PLAYER_NOT_FOUND", "玩家账号不存在。");
+    user.status = "rejected";
+    user.note = String(note || "").trim().slice(0, 160);
+    user.updatedAt = now;
+    return user;
+  });
+}
+
+async function deletePlayerUser(userId) {
+  await updatePlayerStore((store) => {
+    const index = store.users.findIndex((item) => item.id === userId);
+    if (index === -1) throw createPublicError(404, "PLAYER_NOT_FOUND", "玩家账号不存在。");
+    store.users.splice(index, 1);
+  });
+  for (const [sessionId, session] of playerSessions.entries()) {
+    if (session.userId === userId) playerSessions.delete(sessionId);
+  }
+  return { id: userId };
 }
 
 function envBool(value, fallback = false) {
@@ -958,6 +1242,7 @@ const CONFIG_DATA_ENTRIES = [
   "whitelist.json",
   "banned-players.json",
   "banned-ips.json",
+  "player-users.json",
   "usercache.json",
   "usernamecache.json",
   "server.config",
@@ -1374,6 +1659,14 @@ function tellrawJson(value) {
   ]);
 }
 
+function playerTellrawJson(author, value) {
+  return JSON.stringify([
+    { text: "[玩家中心] ", color: "light_purple" },
+    { text: `${author}: `, color: "aqua" },
+    { text: value, color: "white" }
+  ]);
+}
+
 async function sendChatMessage(message) {
   const text = normalizeChatMessage(message);
   await sendRconCommand(`tellraw @a ${tellrawJson(text)}`);
@@ -1383,6 +1676,29 @@ async function sendChatMessage(message) {
     time: new Date().toISOString(),
     logTime: new Date().toTimeString().slice(0, 8),
     author: "面板",
+    text
+  };
+  appendChatMessage(item);
+  broadcastChatMessage(item);
+  return item;
+}
+
+async function sendPlayerChatMessage(user, message) {
+  const text = normalizeChatMessage(message);
+  const author = user.minecraftName || user.username;
+  const lastSentAt = playerChatRate.get(user.id) || 0;
+  const remaining = 3000 - (Date.now() - lastSentAt);
+  if (remaining > 0) {
+    throw createPublicError(429, "PLAYER_CHAT_RATE_LIMITED", `发送太快了，请 ${Math.ceil(remaining / 1000)} 秒后再试。`);
+  }
+  playerChatRate.set(user.id, Date.now());
+  await sendRconCommand(`tellraw @a ${playerTellrawJson(author, text)}`);
+  const item = {
+    id: crypto.randomUUID(),
+    type: "player",
+    time: new Date().toISOString(),
+    logTime: new Date().toTimeString().slice(0, 8),
+    author,
     text
   };
   appendChatMessage(item);
@@ -1414,13 +1730,14 @@ async function getOnlinePlayers() {
 }
 
 async function buildStatus() {
-  const [{ container, inspect }, config, runtimeConfig, serverProperties, mods, backups] = await Promise.all([
+  const [{ container, inspect }, config, runtimeConfig, serverProperties, mods, backups, playerStore] = await Promise.all([
     getMinecraftContainer(),
     readConfigValues(),
     readEnvFile(RUNTIME_ENV_FILE),
     readServerProperties(),
     listMods(),
-    listBackups()
+    listBackups(),
+    readPlayerStore()
   ]);
   const stats = await readContainerStats(container, inspect);
   return {
@@ -1459,7 +1776,9 @@ async function buildStatus() {
     counts: {
       mods: mods.length,
       enabledMods: mods.filter((mod) => mod.enabled).length,
-      backups: backups.length
+      backups: backups.length,
+      playerUsers: playerStore.users.length,
+      pendingPlayerUsers: playerStore.users.filter((user) => (user.status || "pending") === "pending").length
     }
   };
 }
@@ -1492,6 +1811,78 @@ app.post("/api/logout", (req, res) => {
   clearSessionCookie(res);
   res.json({ ok: true });
 });
+
+app.get("/api/player/session", asyncHandler(async (req, res) => {
+  const user = await getPlayerSessionUser(req);
+  res.json({
+    authenticated: Boolean(user),
+    user: publicPlayerUser(user)
+  });
+}));
+
+app.post("/api/player/register", asyncHandler(async (req, res) => {
+  const user = await registerPlayerUser(req.body || {});
+  const sessionId = crypto.randomBytes(32).toString("hex");
+  playerSessions.set(sessionId, { userId: user.id, createdAt: Date.now(), expiresAt: Date.now() + PLAYER_SESSION_TTL_MS });
+  setPlayerSessionCookie(res, sessionId);
+  res.json({ ok: true, user: publicPlayerUser(user) });
+}));
+
+app.post("/api/player/login", asyncHandler(async (req, res) => {
+  const user = await loginPlayerUser(req.body || {});
+  const sessionId = crypto.randomBytes(32).toString("hex");
+  playerSessions.set(sessionId, { userId: user.id, createdAt: Date.now(), expiresAt: Date.now() + PLAYER_SESSION_TTL_MS });
+  setPlayerSessionCookie(res, sessionId);
+  res.json({ ok: true, user: publicPlayerUser(user) });
+}));
+
+app.post("/api/player/logout", (req, res) => {
+  const sessionId = parseCookies(req)[PLAYER_SESSION_COOKIE];
+  if (sessionId) playerSessions.delete(sessionId);
+  clearPlayerSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get("/api/player/me", requirePlayerAuth, asyncHandler(async (req, res) => {
+  const user = await findPlayerUserById(req.playerSession.userId);
+  res.json({ user: publicPlayerUser(user) });
+}));
+
+app.post("/api/player/profile", requirePlayerAuth, asyncHandler(async (req, res) => {
+  const user = await updatePlayerMinecraftName(req.playerSession.userId, req.body?.minecraftName);
+  res.json({ ok: true, user: publicPlayerUser(user) });
+}));
+
+app.post("/api/player/whitelist/request", requirePlayerAuth, asyncHandler(async (req, res) => {
+  const requested = await requestPlayerWhitelist(req.playerSession.userId);
+  let user = requested;
+  let autoApproved = false;
+  if (PLAYER_AUTO_WHITELIST && requested.minecraftName && requested.status !== "approved") {
+    try {
+      user = await approvePlayerWhitelist(requested.id, "self-service");
+      autoApproved = true;
+    } catch {
+      user = await findPlayerUserById(requested.id);
+    }
+  }
+  res.json({ ok: true, autoApproved, user: publicPlayerUser(user) });
+}));
+
+app.get("/api/player/players", requirePlayerAuth, asyncHandler(async (_req, res) => {
+  res.json(await getOnlinePlayers());
+}));
+
+app.get("/api/player/chat/history", requirePlayerAuth, asyncHandler(async (req, res) => {
+  res.json({ messages: await getChatTail(req.query.tail) });
+}));
+
+app.post("/api/player/chat/send", requirePlayerAuth, asyncHandler(async (req, res) => {
+  const user = await findPlayerUserById(req.playerSession.userId);
+  if (!user || user.status === "disabled") {
+    throw createPublicError(403, "PLAYER_DISABLED", "这个玩家账号不可用。");
+  }
+  res.json({ ok: true, message: await sendPlayerChatMessage(user, req.body?.message) });
+}));
 
 app.use("/api", requireAuth);
 
@@ -1553,6 +1944,25 @@ app.post("/api/command", asyncHandler(async (req, res) => {
 
 app.get("/api/players", asyncHandler(async (_req, res) => {
   res.json(await getOnlinePlayers());
+}));
+
+app.get("/api/player-users", asyncHandler(async (_req, res) => {
+  const store = await readPlayerStore();
+  res.json({ users: store.users.map(publicPlayerUser) });
+}));
+
+app.post("/api/player-users/:id/approve", asyncHandler(async (req, res) => {
+  const user = await approvePlayerWhitelist(req.params.id, "admin");
+  res.json({ ok: true, user: publicPlayerUser(user) });
+}));
+
+app.post("/api/player-users/:id/reject", asyncHandler(async (req, res) => {
+  const user = await rejectPlayerUser(req.params.id, req.body?.note);
+  res.json({ ok: true, user: publicPlayerUser(user) });
+}));
+
+app.delete("/api/player-users/:id", asyncHandler(async (req, res) => {
+  res.json({ ok: true, user: await deletePlayerUser(req.params.id) });
 }));
 
 app.get("/api/chat/history", asyncHandler(async (req, res) => {
@@ -1697,6 +2107,10 @@ app.get(/^\/bluemap$/, requireAuth, (_req, res) => {
 
 app.use("/bluemap", requireAuth, asyncHandler(proxyBlueMapRequest));
 
+app.get(/^\/player\/?$/, (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "player.html"));
+});
+
 app.use(express.static(path.join(__dirname, "..", "public"), {
   etag: false,
   lastModified: false,
@@ -1718,15 +2132,28 @@ app.use((error, _req, res, _next) => {
 
 const logsWss = new WebSocket.Server({ noServer: true });
 const chatWss = new WebSocket.Server({ noServer: true });
+const playerChatWss = new WebSocket.Server({ noServer: true });
 
 function broadcastChatMessage(message) {
   const payload = JSON.stringify(message);
-  for (const client of chatWss.clients) {
-    if (client.readyState === WebSocket.OPEN) client.send(payload);
+  for (const wss of [chatWss, playerChatWss]) {
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(payload);
+    }
   }
 }
 
 server.on("upgrade", (req, socket, head) => {
+  if (req.url.startsWith("/ws/player-chat")) {
+    if (!getPlayerSession(req)) {
+      socket.destroy();
+      return;
+    }
+    playerChatWss.handleUpgrade(req, socket, head, (ws) => {
+      playerChatWss.emit("connection", ws, req);
+    });
+    return;
+  }
   if (!getSession(req)) {
     socket.destroy();
     return;
@@ -1791,6 +2218,14 @@ logsWss.on("connection", async (ws) => {
 });
 
 chatWss.on("connection", async (ws) => {
+  handleChatSocket(ws);
+});
+
+playerChatWss.on("connection", async (ws) => {
+  handleChatSocket(ws);
+});
+
+async function handleChatSocket(ws) {
   let stream = null;
   let buffered = "";
   try {
@@ -1842,7 +2277,7 @@ chatWss.on("connection", async (ws) => {
   ws.on("close", () => {
     if (stream && typeof stream.destroy === "function") stream.destroy();
   });
-});
+}
 
 setInterval(() => {
   const now = Date.now();

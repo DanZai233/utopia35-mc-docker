@@ -158,6 +158,7 @@ function activateTab(tabName) {
     if (state.mapStatus) renderMapStatus(state.mapStatus, { loadFrame: true });
     loadMapStatus().catch(showOperationError);
   }
+  if (tabName === "player-center") loadPlayerUsers().catch(showOperationError);
   window.scrollTo({ top: 0, behavior: "auto" });
 }
 
@@ -167,6 +168,7 @@ async function refreshAll() {
     ["地图", () => loadMapStatus({ deferFrame: true })],
     ["聊天", () => loadChatHistory({ silent: true })],
     ["在线玩家", () => loadPlayers({ silent: true })],
+    ["玩家中心", () => loadPlayerUsers({ silent: true })],
     ["配置", loadConfig],
     ["Mod 列表", loadMods],
     ["备份列表", loadBackups]
@@ -238,6 +240,7 @@ function renderStatus(status) {
     "内存": `${status.config.MIN_MEMORY} / ${status.config.MAX_MEMORY}`,
     "RCON": status.config.ENABLE_RCON,
     "Mods": `${status.counts.enabledMods}/${status.counts.mods} 已启用`,
+    "玩家中心": `${status.counts.playerUsers || 0} 个账号 / ${status.counts.pendingPlayerUsers || 0} 待处理`,
     "备份": `${status.counts.backups} 个`
   });
 
@@ -563,6 +566,56 @@ function fillPlayerInputs(player) {
     input.value = player;
   });
   showToast(`已填入玩家：${player}`);
+}
+
+function playerStatusLabel(status) {
+  if (status === "approved") return "已加入白名单";
+  if (status === "rejected") return "已拒绝";
+  if (status === "disabled") return "已禁用";
+  return "待处理";
+}
+
+async function loadPlayerUsers(options = {}) {
+  try {
+    const data = await api("/api/player-users");
+    renderPlayerUsers(data.users || []);
+  } catch (error) {
+    renderPlayerUsers([], error.message);
+    if (options.silent) return;
+    throw error;
+  }
+}
+
+function renderPlayerUsers(users, error = "") {
+  const list = $("#player-users-list");
+  if (!list) return;
+  if (error) {
+    list.innerHTML = `<div class="table-row"><div><div class="table-title">玩家用户读取失败</div><div class="table-meta">${escapeHtml(error)}</div></div></div>`;
+    return;
+  }
+  if (!users.length) {
+    list.innerHTML = `<div class="table-row"><div><div class="table-title">还没有玩家注册</div><div class="table-meta">把 /player 发给玩家即可开始注册。</div></div></div>`;
+    return;
+  }
+  list.innerHTML = users.map((user) => `
+    <div class="table-row player-user-row">
+      <div>
+        <div class="table-title">
+          <span class="backup-type ${escapeHtml(user.status || "pending")}">${escapeHtml(playerStatusLabel(user.status))}</span>
+          ${escapeHtml(user.username)}
+        </div>
+        <div class="table-meta">
+          MC：${escapeHtml(user.minecraftName || "未绑定")} · 注册：${formatDate(user.createdAt)} · 最近登录：${formatDate(user.lastLoginAt)}
+        </div>
+        ${user.note ? `<div class="table-meta">备注：${escapeHtml(user.note)}</div>` : ""}
+      </div>
+      <div class="table-actions">
+        <button class="secondary" data-player-user-approve="${escapeHtml(user.id)}" ${user.minecraftName ? "" : "disabled"}>批准白名单</button>
+        <button class="ghost" data-player-user-reject="${escapeHtml(user.id)}">拒绝</button>
+        <button class="danger" data-player-user-delete="${escapeHtml(user.id)}">删除</button>
+      </div>
+    </div>
+  `).join("");
 }
 
 async function withButtonBusy(button, label, task) {
@@ -958,6 +1011,7 @@ function bindEvents() {
   $("#chat-form").addEventListener("submit", (event) => sendChat(event).catch(showOperationError));
   $("#refresh-map-button").addEventListener("click", () => loadMapStatus({ forceFrameReload: true }).catch(showOperationError));
   $("#install-bluemap-button").addEventListener("click", () => installBlueMap().catch(showOperationError));
+  $("#refresh-player-users-button").addEventListener("click", () => loadPlayerUsers().catch(showOperationError));
   $("#refresh-players-button").addEventListener("click", () => loadPlayers().catch(showOperationError));
   $("#refresh-mods-button").addEventListener("click", () => loadMods().catch(showOperationError));
   $("#refresh-backups-button").addEventListener("click", () => loadBackups().catch(showOperationError));
@@ -1005,6 +1059,39 @@ function bindEvents() {
     const chip = event.target.closest("[data-player-name]");
     if (!chip) return;
     fillPlayerInputs(chip.dataset.playerName);
+  });
+
+  $("#player-users-list").addEventListener("click", async (event) => {
+    const approve = event.target.closest("[data-player-user-approve]");
+    const reject = event.target.closest("[data-player-user-reject]");
+    const del = event.target.closest("[data-player-user-delete]");
+    try {
+      if (approve) {
+        await withButtonBusy(approve, "批准中", async () => {
+          await api(`/api/player-users/${encodeURIComponent(approve.dataset.playerUserApprove)}/approve`, { method: "POST" });
+          showToast("玩家已加入白名单。");
+          await loadPlayerUsers();
+        });
+      }
+      if (reject) {
+        const note = prompt("拒绝原因，可留空：") || "";
+        await withButtonBusy(reject, "拒绝中", async () => {
+          await api(`/api/player-users/${encodeURIComponent(reject.dataset.playerUserReject)}/reject`, { method: "POST", body: { note } });
+          showToast("玩家申请已拒绝。");
+          await loadPlayerUsers();
+        });
+      }
+      if (del) {
+        if (!confirm("删除这个玩家中心账号？")) return;
+        await withButtonBusy(del, "删除中", async () => {
+          await api(`/api/player-users/${encodeURIComponent(del.dataset.playerUserDelete)}`, { method: "DELETE" });
+          showToast("玩家账号已删除。");
+          await loadPlayerUsers();
+        });
+      }
+    } catch (error) {
+      await showOperationError(error);
+    }
   });
 
   $("#mod-upload-form").addEventListener("submit", (event) => uploadMods(event).catch(showOperationError));
