@@ -2203,12 +2203,16 @@ async function clearDroppedItems(options = {}) {
   if (count === null && isRconFailureResponse(response)) {
     throw createPublicError(400, "ITEM_CLEANUP_FAILED", `掉落物清理失败。${response}`);
   }
+  const cleanedCount = count ?? 0;
+  if (itemCleanupConfig.broadcast) {
+    await sendRconCommand(`say 掉落物清理完成，本次清理了 ${cleanedCount} 个掉落物。`);
+  }
   const now = new Date().toISOString();
   itemCleanupState.lastRunAt = now;
   itemCleanupConfig.lastRunAt = now;
   await writeEnvFile(COMPOSE_ENV_FILE, { ITEM_CLEANUP_LAST_RUN: now }, { seedFrom: EXAMPLE_ENV_FILE });
   scheduleNextItemCleanup();
-  return { response, count: count ?? 0, lastRunAt: now, nextRunAt: publicItemCleanupConfig().nextRunAt };
+  return { response, count: cleanedCount, lastRunAt: now, nextRunAt: publicItemCleanupConfig().nextRunAt };
 }
 
 function normalizeChatMessage(value) {
