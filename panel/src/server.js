@@ -786,7 +786,7 @@ async function getPreferredBlueMapHash(webRoot) {
   const startPos = preferred.settings.startPos;
   const x = Array.isArray(startPos) ? Number(startPos[0] || 0) : Number(startPos?.x || 0);
   const z = Array.isArray(startPos) ? Number(startPos[1] || 0) : Number(startPos?.z || 0);
-  return `#${preferred.id}:${Math.round(x)}:0:${Math.round(z)}:1500:0:0:0:0:perspective`;
+  return `#${preferred.id}:${Math.round(x)}:0:${Math.round(z)}:1500:0:0:0:1:flat`;
 }
 
 async function fetchBlueMapVersion() {

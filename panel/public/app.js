@@ -11,7 +11,9 @@ const state = {
   authenticated: false,
   needsRestart: false,
   lastPlayers: [],
-  remoteBackupConfig: null
+  remoteBackupConfig: null,
+  mapStatus: null,
+  mapFrameUrl: ""
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -152,14 +154,17 @@ function activateTab(tabName) {
     loadChatHistory().catch(showOperationError);
     if (!state.chatSocket) connectChat();
   }
-  if (tabName === "map") loadMapStatus().catch(showOperationError);
+  if (tabName === "map") {
+    if (state.mapStatus) renderMapStatus(state.mapStatus, { loadFrame: true });
+    loadMapStatus().catch(showOperationError);
+  }
   window.scrollTo({ top: 0, behavior: "auto" });
 }
 
 async function refreshAll() {
   const tasks = [
     ["状态", refreshStatus],
-    ["地图", loadMapStatus],
+    ["地图", () => loadMapStatus({ deferFrame: true })],
     ["聊天", () => loadChatHistory({ silent: true })],
     ["在线玩家", () => loadPlayers({ silent: true })],
     ["配置", loadConfig],
@@ -572,12 +577,32 @@ async function withButtonBusy(button, label, task) {
   }
 }
 
-async function loadMapStatus() {
-  const status = await api("/api/map");
-  renderMapStatus(status);
+function isTabActive(tabName) {
+  return $(`#tab-${tabName}`)?.classList.contains("active") || false;
 }
 
-function renderMapStatus(status) {
+async function loadMapStatus(options = {}) {
+  const { deferFrame = false, forceFrameReload = false } = options;
+  const status = await api("/api/map");
+  state.mapStatus = status;
+  renderMapStatus(status, {
+    loadFrame: !deferFrame && isTabActive("map"),
+    forceFrameReload
+  });
+}
+
+function unloadMapFrame() {
+  const frameShell = $("#map-frame-shell");
+  const frame = $("#map-frame");
+  frameShell.hidden = true;
+  if (state.mapFrameUrl) {
+    frame.src = "about:blank";
+    state.mapFrameUrl = "";
+  }
+}
+
+function renderMapStatus(status, options = {}) {
+  const { loadFrame = false, forceFrameReload = false } = options;
   const statusBox = $("#map-status");
   const frameShell = $("#map-frame-shell");
   const frame = $("#map-frame");
@@ -587,11 +612,10 @@ function renderMapStatus(status) {
   openLink.href = status.mapUrl;
   installButton.hidden = status.installed && status.enabled;
   installButton.textContent = status.installed && !status.enabled ? "启用 BlueMap" : "安装 BlueMap";
-  frameShell.hidden = true;
-  frame.removeAttribute("src");
   statusBox.classList.remove("error");
 
   if (!status.installed) {
+    unloadMapFrame();
     statusBox.classList.add("error");
     statusBox.innerHTML = `
       <strong>还没有安装 Web 地图。</strong>
@@ -601,6 +625,7 @@ function renderMapStatus(status) {
   }
 
   if (!status.enabled) {
+    unloadMapFrame();
     statusBox.classList.add("error");
     statusBox.innerHTML = `
       <strong>BlueMap 已存在但被禁用。</strong>
@@ -610,6 +635,7 @@ function renderMapStatus(status) {
   }
 
   if (!status.reachable) {
+    unloadMapFrame();
     const networkHint = status.proxied
       ? "面板会通过 /bluemap/ 代理地图，外网只需要能访问面板端口；如果这里仍不可用，请确认 Minecraft 容器内的 BlueMap 服务已经启动。"
       : `请确认地图公网/反代地址可访问，并检查端口 ${escapeHtml(status.hostPort)} 的发布状态。`;
@@ -622,10 +648,17 @@ function renderMapStatus(status) {
 
   statusBox.innerHTML = `
     <strong>BlueMap 地图在线。</strong>
-    <span>${status.proxied ? "当前地图通过面板 /bluemap/ 同源代理加载，frp 只转发面板端口也能访问。" : "当前地图使用单独的公网/反代地址加载。"} 如果画面正在加载，这是 BlueMap 正在渲染世界。</span>
+    <span>${status.proxied ? "当前地图通过面板 /bluemap/ 同源代理加载，frp 只转发面板端口也能访问。" : "当前地图使用单独的公网/反代地址加载。"} 如果看到大片黑色，通常是 BlueMap 还没渲染到那片区域。</span>
   `;
-  frame.src = status.mapUrl;
   frameShell.hidden = false;
+  if (!loadFrame) {
+    return;
+  }
+
+  if (forceFrameReload || state.mapFrameUrl !== status.mapUrl) {
+    state.mapFrameUrl = status.mapUrl;
+    frame.src = status.mapUrl;
+  }
 }
 
 async function installBlueMap() {
@@ -923,7 +956,7 @@ function bindEvents() {
     renderChatMessages();
   });
   $("#chat-form").addEventListener("submit", (event) => sendChat(event).catch(showOperationError));
-  $("#refresh-map-button").addEventListener("click", () => loadMapStatus().catch(showOperationError));
+  $("#refresh-map-button").addEventListener("click", () => loadMapStatus({ forceFrameReload: true }).catch(showOperationError));
   $("#install-bluemap-button").addEventListener("click", () => installBlueMap().catch(showOperationError));
   $("#refresh-players-button").addEventListener("click", () => loadPlayers().catch(showOperationError));
   $("#refresh-mods-button").addEventListener("click", () => loadMods().catch(showOperationError));
